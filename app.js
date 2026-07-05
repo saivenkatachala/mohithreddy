@@ -251,13 +251,7 @@ function sortItems(items) {
     if (appState.sortKey !== 'type' && a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     switch (appState.sortKey) {
       case 'name': return a.name.localeCompare(b.name) * dir;
-      case 'date': {
-        const byDate = (new Date(a.createdAt) - new Date(b.createdAt));
-        // Fall back to creation sequence when timestamps tie (or are
-        // missing), guaranteeing strict creation order: the first thing
-        // created stays on top, each new item lands right below the last.
-        return (byDate !== 0 ? byDate : ((a.seq || 0) - (b.seq || 0))) * dir;
-      }
+      case 'date': return (new Date(a.createdAt) - new Date(b.createdAt)) * dir;
       case 'size': return ((a.size || 0) - (b.size || 0)) * dir;
       case 'type': {
         const ta = a.type === 'folder' ? 'folder' : (a.ext || '');
@@ -558,8 +552,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btn.disabled = true;
     input.disabled = true;
-    btn.classList.remove('btn-success-pulse');
-    btnText.innerHTML = 'Creating<span class="dot-flash"><span>.</span><span>.</span><span>.</span></span>';
+    btnText.textContent = 'Creating...';
     spinner.style.display = 'inline-block';
 
     const startedAt = Date.now();
@@ -580,13 +573,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const elapsed = Date.now() - startedAt;
     if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
 
-    // Morph the spinner into a checkmark "Created!" state for a beat so the
-    // person actually sees the folder finish being made, then close.
-    spinner.style.display = 'none';
-    btn.classList.add('btn-success-pulse');
-    btnText.innerHTML = '<i class="fa-solid fa-check"></i> Created!';
-    await new Promise(r => setTimeout(r, 550));
-
     bootstrap.Modal.getInstance(document.getElementById('createFolderModal')).hide();
     showToast('success', 'Folder created', `"${name}" was created`);
     renderSidebarTree(); renderContent();
@@ -594,7 +580,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btn.disabled = false;
     input.disabled = false;
-    btn.classList.remove('btn-success-pulse');
     btnText.textContent = 'Create';
     spinner.style.display = 'none';
   });
@@ -982,6 +967,10 @@ function renderSettingsView() {
   DriveAPI.getStorageInfo().then(info => {
     const body = document.getElementById('settingsStorageBody');
     if (!body) return;
+    if (!info || info.available === false || !info.limit) {
+      body.textContent = 'Storage info unavailable. (Enable the Drive API advanced service in Apps Script to show real usage.)';
+      return;
+    }
     const pct = Math.min(100, (info.usage / info.limit) * 100);
     body.innerHTML = `
       <div class="d-flex justify-content-between mb-1">

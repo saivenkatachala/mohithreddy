@@ -18,13 +18,14 @@
   <div class="login-card">
     <div class="login-logo"><i class="fa-solid fa-folder-tree"></i></div>
     <h1 class="login-title">File Explorer</h1>
-    <p class="login-subtitle">Sign in to access your Drive workspace</p>
+    <p class="login-subtitle" id="cardSubtitle">Sign in to access your Drive workspace</p>
 
-    <div id="loginError" class="login-error" style="display:none;">
-      <i class="fa-solid fa-circle-exclamation"></i>
-      <span id="loginErrorText">Invalid email or password.</span>
+    <div id="banner" class="login-error" style="display:none;">
+      <i class="fa-solid fa-circle-exclamation" id="bannerIcon"></i>
+      <span id="bannerText"></span>
     </div>
 
+    <!-- ============ SCREEN 1: Sign in ============ -->
     <form id="loginForm" novalidate>
       <div class="mb-3 input-icon-wrap">
         <i class="fa-solid fa-envelope"></i>
@@ -32,13 +33,14 @@
       </div>
       <div class="mb-2 input-icon-wrap">
         <i class="fa-solid fa-lock"></i>
-        <input type="password" class="form-control glass-input" id="password" placeholder="Password" autocomplete="current-password" required>
+        <input type="password" class="form-control glass-input pw-field" id="password" placeholder="Password" autocomplete="current-password" required>
+        <button type="button" class="pw-toggle-btn" data-target="password" tabindex="-1" aria-label="Show password"><i class="fa-solid fa-eye"></i></button>
       </div>
       <div class="d-flex justify-content-between align-items-center mb-4" style="font-size:0.8rem;">
         <label class="text-white-50 d-flex align-items-center gap-2" style="cursor:pointer;">
           <input type="checkbox" id="remember" class="form-check-input mt-0"> Remember me
         </label>
-        <a href="#" class="text-white-50" style="text-decoration:underline;">Forgot password?</a>
+        <a href="#" id="forgotPasswordLink" class="text-white-50" style="text-decoration:underline;">Forgot password?</a>
       </div>
       <button type="submit" class="btn btn-login ripple" id="loginBtn">
         <span id="loginBtnText">Sign In</span>
@@ -46,31 +48,94 @@
       </button>
     </form>
 
-    <p class="login-hint">Demo credentials are pre-filled for this build.<br>Not for production use — see README.</p>
+    <!-- ============ SCREEN 2: Request OTP ============ -->
+    <form id="forgotEmailForm" novalidate style="display:none;">
+      <div class="mb-3 input-icon-wrap">
+        <i class="fa-solid fa-envelope"></i>
+        <input type="email" class="form-control glass-input" id="resetEmail" placeholder="Email address" required>
+      </div>
+      <button type="submit" class="btn btn-login ripple" id="sendOtpBtn">
+        <span id="sendOtpBtnText">Send code</span>
+        <span id="sendOtpSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none;"></span>
+      </button>
+      <p class="login-hint"><a href="#" id="backToLoginFromStep1" class="text-white-50" style="text-decoration:underline;">← Back to sign in</a></p>
+    </form>
+
+    <!-- ============ SCREEN 3: Verify OTP + new password ============ -->
+    <form id="forgotResetForm" novalidate style="display:none;">
+      <div class="mb-3 input-icon-wrap">
+        <i class="fa-solid fa-shield-halved"></i>
+        <input type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="form-control glass-input otp-input" id="otpInput" placeholder="6-digit code" required>
+      </div>
+      <div class="mb-3 input-icon-wrap">
+        <i class="fa-solid fa-lock"></i>
+        <input type="password" class="form-control glass-input pw-field" id="newPasswordInput" placeholder="New password" required minlength="6">
+        <button type="button" class="pw-toggle-btn" data-target="newPasswordInput" tabindex="-1" aria-label="Show password"><i class="fa-solid fa-eye"></i></button>
+      </div>
+      <div class="mb-3 input-icon-wrap">
+        <i class="fa-solid fa-lock"></i>
+        <input type="password" class="form-control glass-input pw-field" id="confirmPasswordInput" placeholder="Confirm new password" required minlength="6">
+        <button type="button" class="pw-toggle-btn" data-target="confirmPasswordInput" tabindex="-1" aria-label="Show password"><i class="fa-solid fa-eye"></i></button>
+      </div>
+      <button type="submit" class="btn btn-login ripple" id="resetPasswordBtn">
+        <span id="resetPasswordBtnText">Reset password</span>
+        <span id="resetPasswordSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none;"></span>
+      </button>
+      <p class="login-hint">
+        <a href="#" id="resendOtpLink" class="text-white-50" style="text-decoration:underline;">Resend code</a>
+        &nbsp;·&nbsp;
+        <a href="#" id="backToLoginFromStep2" class="text-white-50" style="text-decoration:underline;">Back to sign in</a>
+      </p>
+    </form>
+
   </div>
 
+<script src="api.js"></script>
 <script>
-  // ---- Demo login (client-side only — see project README for security notes) ----
-  const VALID_EMAIL = "mohithreddy@gmail.com";
-  const VALID_PASSWORD = "Mohith@04";
+  // ---- Fallback demo credentials, used only if the Apps Script backend
+  //      below hasn't been deployed yet (see README) ----
+  const VALID_EMAIL = "manojreddy44m@gmail.com";
+  let demoPassword = "Mohith@04";
+  const backendConfigured = typeof CONFIG !== 'undefined' && !CONFIG.APPS_SCRIPT_URL.includes('PASTE_YOUR_DEPLOYMENT_ID');
 
-  const form = document.getElementById('loginForm');
-  const errorBox = document.getElementById('loginError');
-  const errorText = document.getElementById('loginErrorText');
-  const btn = document.getElementById('loginBtn');
-  const btnText = document.getElementById('loginBtnText');
-  const spinner = document.getElementById('loginSpinner');
+  const screens = {
+    login: document.getElementById('loginForm'),
+    step1: document.getElementById('forgotEmailForm'),
+    step2: document.getElementById('forgotResetForm'),
+  };
+  const subtitle = document.getElementById('cardSubtitle');
+  const demoHint = document.getElementById('demoHint');
+  const banner = document.getElementById('banner');
+  const bannerIcon = document.getElementById('bannerIcon');
+  const bannerText = document.getElementById('bannerText');
+
+  let resetEmailValue = '';
+  let resendCooldownTimer = null;
+
+  function showBanner(type, msg) {
+    bannerText.textContent = msg;
+    banner.className = 'login-error' + (type === 'success' ? ' login-success' : type === 'info' ? ' login-info' : '');
+    bannerIcon.className = 'fa-solid ' + (type === 'success' ? 'fa-circle-check' : type === 'info' ? 'fa-circle-info' : 'fa-circle-exclamation');
+    banner.style.display = 'flex';
+    void banner.offsetWidth;
+    banner.style.animation = 'none';
+    if (type !== 'success' && type !== 'info') {
+      requestAnimationFrame(() => { banner.style.animation = ''; });
+    }
+  }
+  function hideBanner() { banner.style.display = 'none'; }
+
+  function showScreen(name) {
+    hideBanner();
+    Object.entries(screens).forEach(([key, el]) => { el.style.display = key === name ? 'block' : 'none'; });
+    demoHint.style.display = name === 'login' ? 'block' : 'none';
+    if (name === 'login') subtitle.textContent = 'Sign in to access your Drive workspace';
+    if (name === 'step1') subtitle.textContent = "Enter your account email and we'll send a 6-digit verification code.";
+    if (name === 'step2') subtitle.innerHTML = `Enter the code sent to <span class="fw-semibold">${resetEmailValue}</span> and choose a new password.`;
+  }
 
   // Pre-fill for convenience in this demo build
   document.getElementById('email').value = VALID_EMAIL;
-
-  function showError(msg) {
-    errorText.textContent = msg;
-    errorBox.style.display = 'flex';
-    errorBox.classList.remove('login-error');
-    void errorBox.offsetWidth;
-    errorBox.classList.add('login-error');
-  }
 
   // Ripple effect
   document.querySelectorAll('.ripple').forEach(el => {
@@ -87,20 +152,40 @@
     });
   });
 
+  // Password show/hide toggles
+  document.querySelectorAll('.pw-toggle-btn').forEach(toggleBtn => {
+    toggleBtn.addEventListener('click', () => {
+      const input = document.getElementById(toggleBtn.dataset.target);
+      const icon = toggleBtn.querySelector('i');
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      icon.classList.toggle('fa-eye', showing);
+      icon.classList.toggle('fa-eye-slash', !showing);
+      toggleBtn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+      input.focus({ preventScroll: true });
+    });
+  });
+
   // Already logged in? Skip straight to dashboard.
   if (sessionStorage.getItem('fe_session') === 'active') {
     window.location.href = 'dashboard.html';
   }
 
-  form.addEventListener('submit', function (e) {
+  // ============ Sign in ============
+  const form = screens.login;
+  const btn = document.getElementById('loginBtn');
+  const btnText = document.getElementById('loginBtnText');
+  const spinner = document.getElementById('loginSpinner');
+
+  form.addEventListener('submit', async function (e) {
     e.preventDefault();
-    errorBox.style.display = 'none';
+    hideBanner();
 
     const email = document.getElementById('email').value.trim();
     const password = document.getElementById('password').value;
 
     if (!email || !password) {
-      showError('Please enter both email and password.');
+      showBanner('error', 'Please enter both email and password.');
       return;
     }
 
@@ -108,19 +193,173 @@
     spinner.style.display = 'inline-block';
     btn.disabled = true;
 
-    setTimeout(() => {
-      if (email.toLowerCase() === VALID_EMAIL.toLowerCase() && password === VALID_PASSWORD) {
-        sessionStorage.setItem('fe_session', 'active');
-        sessionStorage.setItem('fe_user_email', email);
-        sessionStorage.setItem('fe_login_toast', '1');
-        window.location.href = 'dashboard.html';
+    try {
+      if (backendConfigured) {
+        await AppScriptBackend._post('login', { email, password });
       } else {
-        btnText.textContent = 'Sign In';
-        spinner.style.display = 'none';
-        btn.disabled = false;
-        showError('Invalid email or password. Please try again.');
+        await new Promise(r => setTimeout(r, 500));
+        if (email.toLowerCase() !== VALID_EMAIL.toLowerCase() || password !== demoPassword) {
+          throw new Error('Invalid email or password. Please try again.');
+        }
       }
-    }, 700);
+      sessionStorage.setItem('fe_session', 'active');
+      sessionStorage.setItem('fe_user_email', email);
+      sessionStorage.setItem('fe_login_toast', '1');
+      window.location.href = 'dashboard.html';
+    } catch (err) {
+      btnText.textContent = 'Sign In';
+      spinner.style.display = 'none';
+      btn.disabled = false;
+      showBanner('error', err.message || 'Invalid email or password. Please try again.');
+    }
+  });
+
+  // ============ Forgot password: step 1 — request OTP ============
+  document.getElementById('forgotPasswordLink').addEventListener('click', (e) => {
+    e.preventDefault();
+    document.getElementById('resetEmail').value = document.getElementById('email').value.trim();
+    showScreen('step1');
+  });
+  document.getElementById('backToLoginFromStep1').addEventListener('click', (e) => {
+    e.preventDefault();
+    showScreen('login');
+  });
+
+  let demoOtp = null; // only used when the Apps Script backend isn't deployed yet
+
+  document.getElementById('forgotEmailForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    hideBanner();
+    const email = document.getElementById('resetEmail').value.trim();
+    if (!email) return;
+
+    const sendBtn = document.getElementById('sendOtpBtn');
+    const sendBtnText = document.getElementById('sendOtpBtnText');
+    const sendSpinner = document.getElementById('sendOtpSpinner');
+    sendBtn.disabled = true;
+    sendBtnText.textContent = 'Sending...';
+    sendSpinner.style.display = 'inline-block';
+
+    try {
+      if (backendConfigured) {
+        await AppScriptBackend._post('requestPasswordReset', { email });
+      } else {
+        await new Promise(r => setTimeout(r, 600));
+        if (email.toLowerCase() !== VALID_EMAIL.toLowerCase()) {
+          throw new Error('No account found with that email.');
+        }
+        demoOtp = String(Math.floor(100000 + Math.random() * 900000));
+      }
+      resetEmailValue = email;
+      showScreen('step2');
+      if (backendConfigured) {
+        showBanner('success', `Code sent to ${email}. It expires in 10 minutes.`);
+      } else {
+        showBanner('info', `Demo mode (backend not deployed) — your code is ${demoOtp}. In production this arrives by email.`);
+      }
+      startResendCooldown();
+    } catch (err) {
+      showBanner('error', err.message || "Couldn't send the code. Please try again.");
+    } finally {
+      sendBtn.disabled = false;
+      sendBtnText.textContent = 'Send code';
+      sendSpinner.style.display = 'none';
+    }
+  });
+
+  // ============ Forgot password: step 2 — verify + reset ============
+  document.getElementById('backToLoginFromStep2').addEventListener('click', (e) => {
+    e.preventDefault();
+    showScreen('login');
+  });
+
+  function startResendCooldown() {
+    const link = document.getElementById('resendOtpLink');
+    let seconds = 30;
+    link.classList.add('text-white-50');
+    link.style.pointerEvents = 'none';
+    link.style.opacity = '0.5';
+    const original = 'Resend code';
+    link.textContent = `Resend code (${seconds}s)`;
+    clearInterval(resendCooldownTimer);
+    resendCooldownTimer = setInterval(() => {
+      seconds -= 1;
+      if (seconds <= 0) {
+        clearInterval(resendCooldownTimer);
+        link.textContent = original;
+        link.style.pointerEvents = 'auto';
+        link.style.opacity = '1';
+      } else {
+        link.textContent = `Resend code (${seconds}s)`;
+      }
+    }, 1000);
+  }
+
+  document.getElementById('resendOtpLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (e.currentTarget.style.pointerEvents === 'none') return;
+    try {
+      if (backendConfigured) {
+        await AppScriptBackend._post('requestPasswordReset', { email: resetEmailValue });
+        showBanner('success', `A new code was sent to ${resetEmailValue}.`);
+      } else {
+        demoOtp = String(Math.floor(100000 + Math.random() * 900000));
+        showBanner('info', `Demo mode — your new code is ${demoOtp}.`);
+      }
+      startResendCooldown();
+    } catch (err) {
+      showBanner('error', err.message || "Couldn't resend the code.");
+    }
+  });
+
+  document.getElementById('forgotResetForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    hideBanner();
+    const otp = document.getElementById('otpInput').value.trim();
+    const newPassword = document.getElementById('newPasswordInput').value;
+    const confirmPassword = document.getElementById('confirmPasswordInput').value;
+
+    if (!/^\d{6}$/.test(otp)) {
+      showBanner('error', 'Enter the 6-digit code from your email.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      showBanner('error', 'Password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      showBanner('error', 'Passwords do not match.');
+      return;
+    }
+
+    const resetBtn = document.getElementById('resetPasswordBtn');
+    const resetBtnText = document.getElementById('resetPasswordBtnText');
+    const resetSpinner = document.getElementById('resetPasswordSpinner');
+    resetBtn.disabled = true;
+    resetBtnText.textContent = 'Resetting...';
+    resetSpinner.style.display = 'inline-block';
+
+    try {
+      if (backendConfigured) {
+        await AppScriptBackend._post('verifyOtpAndResetPassword', { email: resetEmailValue, otp, newPassword });
+      } else {
+        await new Promise(r => setTimeout(r, 500));
+        if (otp !== demoOtp) throw new Error('Incorrect code.');
+        // Demo-only: updates the in-memory password for this page load; a real
+        // reset persists server-side once the Apps Script backend is deployed.
+        demoPassword = newPassword;
+      }
+      showScreen('login');
+      document.getElementById('email').value = resetEmailValue;
+      document.getElementById('password').value = '';
+      showBanner('success', 'Password updated. Sign in with your new password.');
+    } catch (err) {
+      showBanner('error', err.message || "Couldn't reset the password.");
+    } finally {
+      resetBtn.disabled = false;
+      resetBtnText.textContent = 'Reset password';
+      resetSpinner.style.display = 'none';
+    }
   });
 </script>
 </body>

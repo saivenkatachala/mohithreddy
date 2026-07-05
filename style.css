@@ -187,6 +187,22 @@ a { text-decoration: none; }
   color: rgba(255,255,255,0.55); font-size: 0.95rem;
 }
 
+/* Password show/hide eye icon */
+.input-icon-wrap .glass-input.pw-field { padding-right: 44px; }
+.pw-toggle-btn {
+  position: absolute;
+  right: 6px; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; padding: 0;
+  color: rgba(255,255,255,0.5);
+  font-size: 0.92rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: var(--transition-fast);
+}
+.pw-toggle-btn:hover, .pw-toggle-btn:focus-visible { color: #fff; background: rgba(255,255,255,0.08); }
+
 .btn-login {
   width: 100%;
   border: none;
@@ -234,6 +250,12 @@ a { text-decoration: none; }
   background: rgba(0, 200, 83, 0.14) !important;
   border-color: rgba(0, 200, 83, 0.4) !important;
   color: #9BE8B4 !important;
+}
+
+.login-info {
+  background: rgba(66, 165, 245, 0.14) !important;
+  border-color: rgba(66, 165, 245, 0.35) !important;
+  color: #CFE8FF !important;
 }
 
 /* ============================================================
@@ -923,4 +945,25 @@ a { text-decoration: none; }
   .topbar { padding: 0 12px; gap: 8px; }
   .toolbar { flex-direction: column; align-items: stretch; }
   .toolbar-left, .toolbar-right { justify-content: space-between; }
+}
+
+/* --- Login / forgot-password: small phones --- */
+@media (max-width: 480px) {
+  .login-page { padding: 16px; }
+  .login-card { padding: 34px 22px 26px; max-width: 100%; }
+  .login-logo { width: 48px; height: 48px; font-size: 22px; }
+  .login-title { font-size: 1.3rem; }
+  .login-subtitle { font-size: 0.82rem; margin-bottom: 22px; }
+  .fp-steps { gap: 4px; }
+  .fp-step { font-size: 0.64rem; gap: 4px; }
+  .fp-step span { width: 17px; height: 17px; font-size: 0.6rem; }
+  .fp-step-line { width: 12px; }
+  .otp-input-row { gap: 6px; }
+  .otp-box { width: 38px; height: 46px; font-size: 1.1rem; }
+}
+@media (max-width: 360px) {
+  .login-card { padding: 28px 16px 22px; }
+  .otp-input-row { gap: 4px; }
+  .otp-box { width: 32px; height: 42px; font-size: 0.95rem; border-radius: 6px; }
+  .fp-step span { width: 16px; height: 16px; }
 }
