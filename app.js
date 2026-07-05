@@ -12,7 +12,7 @@ const appState = {
   currentFolderId: null,      // active folder in "My Files"
   currentView: 'files',       // files | recent | favorites | trash
   viewMode: 'grid',           // grid | list
-  sortKey: 'name',            // name | date | size | type
+  sortKey: 'date',          // name | date | size | type — 'date' asc keeps newest items at the bottom, in creation order
   sortDir: 'asc',
   searchQuery: '',
   contextTargetId: null,
@@ -72,6 +72,17 @@ function showToast(type, title, msg) {
   }, 3400);
 }
 
+// ---------- Highlight newly created/uploaded items ----------
+function highlightNewItem(id) {
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.file-card[data-id="${id}"], tr[data-id="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    el.classList.add('just-created');
+    setTimeout(() => el.classList.remove('just-created'), 1600);
+  });
+}
+
 // ---------- Init ----------
 document.addEventListener('DOMContentLoaded', async () => {
   const email = sessionStorage.getItem('fe_user_email') || 'user@example.com';
@@ -80,6 +91,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await DriveAPI.getTree(); // fetches your real Drive tree via Apps Script once deployed; demo data until then
   appState.currentFolderId = ROOT.id;
+  applySavedPreferences();
 
   renderSidebarTree();
   renderBreadcrumb();
@@ -184,7 +196,7 @@ function renderBreadcrumb() {
   bar.innerHTML = '';
 
   if (appState.currentView !== 'files') {
-    const labels = { recent: 'Recent', favorites: 'Favorites', trash: 'Trash' };
+    const labels = { recent: 'Recent', favorites: 'Favorites', trash: 'Trash', settings: 'Settings' };
     bar.innerHTML = `<span class="breadcrumb-item current"><i class="fa-solid fa-house me-1"></i>${labels[appState.currentView]}</span>`;
     return;
   }
@@ -239,7 +251,13 @@ function sortItems(items) {
     if (appState.sortKey !== 'type' && a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     switch (appState.sortKey) {
       case 'name': return a.name.localeCompare(b.name) * dir;
-      case 'date': return (new Date(a.createdAt) - new Date(b.createdAt)) * dir;
+      case 'date': {
+        const byDate = (new Date(a.createdAt) - new Date(b.createdAt));
+        // Fall back to creation sequence when timestamps tie (or are
+        // missing), guaranteeing strict creation order: the first thing
+        // created stays on top, each new item lands right below the last.
+        return (byDate !== 0 ? byDate : ((a.seq || 0) - (b.seq || 0))) * dir;
+      }
       case 'size': return ((a.size || 0) - (b.size || 0)) * dir;
       case 'type': {
         const ta = a.type === 'folder' ? 'folder' : (a.ext || '');
@@ -253,6 +271,26 @@ function sortItems(items) {
 }
 
 function renderContent() {
+  const toolbar = document.querySelector('.toolbar');
+  const settingsEl = document.getElementById('settingsView');
+
+  if (appState.currentView === 'settings') {
+    toolbar.style.display = 'none';
+    document.getElementById('gridView').style.display = 'none';
+    document.getElementById('listViewWrap').style.display = 'none';
+    document.getElementById('emptyState').style.display = 'none';
+    settingsEl.style.display = 'block';
+    renderSettingsView();
+    return;
+  }
+  settingsEl.style.display = 'none';
+  toolbar.style.display = 'flex';
+
+  // Upload / New folder don't make sense inside Trash
+  const isTrash = appState.currentView === 'trash';
+  document.getElementById('uploadFileBtn').style.display = isTrash ? 'none' : '';
+  document.getElementById('newFolderBtn').style.display = isTrash ? 'none' : '';
+
   const items = sortItems(getViewItems());
   const gridEl = document.getElementById('gridView');
   const listBody = document.getElementById('listViewBody');
@@ -300,18 +338,21 @@ function buildFileCard(item) {
 
   const isFav = STATE.favorites.has(item.id);
   card.innerHTML = `
-    <div class="card-actions dropdown">
-      <button class="icon-btn" style="width:26px;height:26px;" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
+    <div class="card-actions">
+      <button class="icon-btn card-menu-btn" style="width:26px;height:26px;">
         <i class="fa-solid fa-ellipsis-vertical" style="font-size:0.8rem;"></i>
       </button>
-      <ul class="dropdown-menu dropdown-menu-end"></ul>
     </div>
     <div class="card-icon"><i class="fa-solid ${iconClass} ${iconColor}"></i></div>
     <div class="card-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)} ${isFav ? '<i class="fa-solid fa-star text-warning" style="font-size:0.7rem;"></i>' : ''}</div>
     <div class="card-meta">${item.type === 'folder' ? `${(item.children || []).length} items` : formatSize(item.size)} · ${formatDate(item.createdAt)}</div>
   `;
 
-  populateDropdown(card.querySelector('.dropdown-menu'), item);
+  card.querySelector('.card-menu-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openContextMenu(rect.right - 190, rect.bottom + 4, item);
+  });
 
   card.addEventListener('dblclick', () => activateItem(item));
   card.addEventListener('click', (e) => { if (!e.target.closest('.dropdown')) selectCard(card); });
@@ -347,14 +388,17 @@ function buildFileRow(item) {
     <td>${formatDate(item.createdAt)}</td>
     <td>${item.type === 'folder' ? '—' : formatSize(item.size)}</td>
     <td>${item.type === 'folder' ? 'Folder' : (item.ext || '').toUpperCase()}</td>
-    <td class="dropdown">
-      <button class="icon-btn" style="width:30px;height:30px;" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
+    <td>
+      <button class="icon-btn row-menu-btn" style="width:30px;height:30px;">
         <i class="fa-solid fa-ellipsis-vertical" style="font-size:0.85rem;"></i>
       </button>
-      <ul class="dropdown-menu dropdown-menu-end"></ul>
     </td>
   `;
-  populateDropdown(tr.querySelector('.dropdown-menu'), item);
+  tr.querySelector('.row-menu-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openContextMenu(rect.right - 190, rect.bottom + 4, item);
+  });
 
   tr.addEventListener('dblclick', () => activateItem(item));
   tr.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(e.clientX, e.clientY, item); });
@@ -378,21 +422,6 @@ function activateItem(item) {
   } else if (item.type === 'file') {
     openPreview(item);
   }
-}
-
-function populateDropdown(ul, item) {
-  const actions = actionsFor(item);
-  ul.innerHTML = actions.map(a =>
-    a === 'divider'
-      ? `<li><hr class="dropdown-divider"></li>`
-      : `<li><a class="dropdown-item ${a.danger ? 'text-danger' : ''}" href="#" data-action="${a.key}"><i class="fa-solid ${a.icon} me-2"></i>${a.label}</a></li>`
-  ).join('');
-  ul.querySelectorAll('[data-action]').forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      handleAction(link.dataset.action, item);
-    });
-  });
 }
 
 function actionsFor(item) {
@@ -498,8 +527,8 @@ function openContextMenu(x, y, item) {
   menu.style.top = '-9999px';
   menu.classList.add('show');
   const menuHeight = menu.offsetHeight;
-  menu.style.left = Math.min(x, window.innerWidth - 210) + 'px';
-  menu.style.top = Math.min(y, window.innerHeight - menuHeight - 20) + 'px';
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - 210)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menuHeight - 20)) + 'px';
 }
 function closeContextMenu() {
   document.getElementById('contextMenu').classList.remove('show');
@@ -521,10 +550,53 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     const name = document.getElementById('newFolderNameInput').value.trim();
     if (!name) return;
-    await DriveAPI.createFolder(modalTargetParentId, name);
+
+    const btn = document.getElementById('createFolderSubmitBtn');
+    const btnText = document.getElementById('createFolderBtnText');
+    const spinner = document.getElementById('createFolderSpinner');
+    const input = document.getElementById('newFolderNameInput');
+
+    btn.disabled = true;
+    input.disabled = true;
+    btn.classList.remove('btn-success-pulse');
+    btnText.innerHTML = 'Creating<span class="dot-flash"><span>.</span><span>.</span><span>.</span></span>';
+    spinner.style.display = 'inline-block';
+
+    const startedAt = Date.now();
+    let node;
+    try {
+      node = await DriveAPI.createFolder(modalTargetParentId, name);
+    } catch (err) {
+      showToast('error', "Couldn't create folder", String(err.message || err));
+      btn.disabled = false;
+      input.disabled = false;
+      btnText.textContent = 'Create';
+      spinner.style.display = 'none';
+      return;
+    }
+
+    // Keep the "Creating..." state visible for a beat so the animation reads
+    // even on the instant mock backend — a real network call will just add to this.
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
+
+    // Morph the spinner into a checkmark "Created!" state for a beat so the
+    // person actually sees the folder finish being made, then close.
+    spinner.style.display = 'none';
+    btn.classList.add('btn-success-pulse');
+    btnText.innerHTML = '<i class="fa-solid fa-check"></i> Created!';
+    await new Promise(r => setTimeout(r, 550));
+
     bootstrap.Modal.getInstance(document.getElementById('createFolderModal')).hide();
     showToast('success', 'Folder created', `"${name}" was created`);
     renderSidebarTree(); renderContent();
+    highlightNewItem(node.id);
+
+    btn.disabled = false;
+    input.disabled = false;
+    btn.classList.remove('btn-success-pulse');
+    btnText.textContent = 'Create';
+    spinner.style.display = 'none';
   });
 
   document.getElementById('renameForm').addEventListener('submit', async (e) => {
@@ -660,9 +732,10 @@ function handleFiles(fileList) {
         progress = 100;
         clearInterval(timer);
         fill.style.width = '100%'; pct.textContent = '100%';
-        await DriveAPI.uploadFile(parentId, { name: f.name, size: f.size, ext, url, rawFile: f });
+        const node = await DriveAPI.uploadFile(parentId, { name: f.name, size: f.size, ext, url, rawFile: f });
         showToast('success', 'File uploaded', f.name);
         renderContent();
+        if (node) highlightNewItem(node.id);
         setTimeout(() => {
           row.remove();
           if (!list.children.length) panel.style.display = 'none';
@@ -720,10 +793,7 @@ function wireGlobalEvents() {
   document.getElementById('nav-favorites').addEventListener('click', () => switchView('favorites', 'nav-favorites'));
   document.getElementById('nav-trash').addEventListener('click', () => switchView('trash', 'nav-trash'));
   document.getElementById('nav-dashboard').addEventListener('click', () => openFolder(ROOT.id));
-  document.getElementById('nav-settings').addEventListener('click', () => {
-    setActiveNavItem('nav-settings');
-    showToast('info', 'Settings', 'Settings panel isn\'t built out in this demo yet.');
-  });
+  document.getElementById('nav-settings').addEventListener('click', () => switchView('settings', 'nav-settings'));
 
   // Global drag & drop overlay for uploads anywhere in content area
   const contentArea = document.getElementById('contentArea');
@@ -799,5 +869,139 @@ function setViewMode(mode) {
   appState.viewMode = mode;
   document.getElementById('gridBtn').classList.toggle('active', mode === 'grid');
   document.getElementById('listBtn').classList.toggle('active', mode === 'list');
+  renderContent();
+}
+
+// ============================================================
+// SETTINGS
+// ============================================================
+const SETTINGS_KEY = 'fe_settings';
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
+  catch { return {}; }
+}
+function saveSettings(patch) {
+  const updated = { ...loadSettings(), ...patch };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
+  return updated;
+}
+function applySavedPreferences() {
+  const s = loadSettings();
+  if (s.defaultView === 'list' || s.defaultView === 'grid') appState.viewMode = s.defaultView;
+  if (s.defaultSortKey) appState.sortKey = s.defaultSortKey;
+  document.getElementById('gridBtn').classList.toggle('active', appState.viewMode === 'grid');
+  document.getElementById('listBtn').classList.toggle('active', appState.viewMode === 'list');
+  const key = appState.sortKey;
+  document.getElementById('sortLabel').textContent = `Sort: ${key[0].toUpperCase() + key.slice(1)} (${appState.sortDir === 'asc' ? '↑' : '↓'})`;
+}
+
+function renderSettingsView() {
+  const el = document.getElementById('settingsView');
+  const email = sessionStorage.getItem('fe_user_email') || 'user@example.com';
+  const trashCount = STATE.trash.length;
+
+  el.innerHTML = `
+    <div class="settings-grid">
+      <section class="settings-card">
+        <h6 class="settings-card-title"><i class="fa-solid fa-user me-2"></i>Account</h6>
+        <div class="settings-account-row">
+          <div class="user-avatar" style="width:44px;height:44px;font-size:1rem;">${escapeHtml(email[0].toUpperCase())}</div>
+          <div>
+            <div class="fw-semibold">${escapeHtml(email)}</div>
+            <div class="text-muted" style="font-size:0.78rem;">Signed in</div>
+          </div>
+          <button class="btn-outline-soft ms-auto" id="settingsLogoutBtn"><i class="fa-solid fa-arrow-right-from-bracket me-1"></i>Sign out</button>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <h6 class="settings-card-title"><i class="fa-solid fa-sliders me-2"></i>Preferences</h6>
+        <div class="settings-row" style="border-top:none;padding-top:0;">
+          <div>
+            <div class="fw-semibold" style="font-size:0.85rem;">Default view</div>
+            <div class="text-muted" style="font-size:0.76rem;">Layout used when you open the app</div>
+          </div>
+          <div class="view-toggle" id="settingsViewToggle">
+            <button data-mode="grid" class="${appState.viewMode === 'grid' ? 'active' : ''}"><i class="fa-solid fa-table-cells-large"></i></button>
+            <button data-mode="list" class="${appState.viewMode === 'list' ? 'active' : ''}"><i class="fa-solid fa-list"></i></button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="fw-semibold" style="font-size:0.85rem;">Default sort</div>
+            <div class="text-muted" style="font-size:0.76rem;">How files are ordered by default</div>
+          </div>
+          <select class="form-select form-select-sm" id="settingsSortSelect" style="width:auto;">
+            <option value="name" ${appState.sortKey === 'name' ? 'selected' : ''}>Name</option>
+            <option value="date" ${appState.sortKey === 'date' ? 'selected' : ''}>Upload date</option>
+            <option value="size" ${appState.sortKey === 'size' ? 'selected' : ''}>File size</option>
+            <option value="type" ${appState.sortKey === 'type' ? 'selected' : ''}>File type</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <h6 class="settings-card-title"><i class="fa-solid fa-database me-2"></i>Storage</h6>
+        <div id="settingsStorageBody" class="text-muted" style="font-size:0.82rem;">Loading storage usage…</div>
+      </section>
+
+      <section class="settings-card settings-danger">
+        <h6 class="settings-card-title text-danger"><i class="fa-solid fa-triangle-exclamation me-2"></i>Danger zone</h6>
+        <div class="settings-row" style="border-top:none;padding-top:0;">
+          <div>
+            <div class="fw-semibold" style="font-size:0.85rem;">Empty trash</div>
+            <div class="text-muted" style="font-size:0.76rem;">${trashCount} item${trashCount !== 1 ? 's' : ''} in Trash — this can't be undone</div>
+          </div>
+          <button class="btn btn-outline-danger btn-sm" id="settingsEmptyTrashBtn" ${trashCount === 0 ? 'disabled' : ''}>Empty trash</button>
+        </div>
+      </section>
+    </div>
+  `;
+
+  el.querySelectorAll('#settingsViewToggle button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      saveSettings({ defaultView: mode });
+      el.querySelectorAll('#settingsViewToggle button').forEach(b => b.classList.toggle('active', b === btn));
+      showToast('success', 'Preference saved', `Default view set to ${mode}`);
+    });
+  });
+
+  el.querySelector('#settingsSortSelect').addEventListener('change', (e) => {
+    saveSettings({ defaultSortKey: e.target.value });
+    showToast('success', 'Preference saved', `Default sort set to ${e.target.options[e.target.selectedIndex].text}`);
+  });
+
+  el.querySelector('#settingsLogoutBtn').addEventListener('click', () => {
+    document.getElementById('logoutBtn').click();
+  });
+
+  el.querySelector('#settingsEmptyTrashBtn').addEventListener('click', () => emptyTrash());
+
+  DriveAPI.getStorageInfo().then(info => {
+    const body = document.getElementById('settingsStorageBody');
+    if (!body) return;
+    const pct = Math.min(100, (info.usage / info.limit) * 100);
+    body.innerHTML = `
+      <div class="d-flex justify-content-between mb-1">
+        <span>${formatSize(info.usage)} used</span>
+        <span>${formatSize(info.limit)} total</span>
+      </div>
+      <div class="storage-bar-track"><div class="storage-bar-fill" style="width:${pct}%;"></div></div>
+    `;
+  }).catch(() => {
+    const body = document.getElementById('settingsStorageBody');
+    if (body) body.textContent = 'Storage info unavailable.';
+  });
+}
+
+async function emptyTrash() {
+  if (!STATE.trash.length) return;
+  const ids = STATE.trash.map(t => t.item.id);
+  for (const id of ids) {
+    await DriveAPI.permanentlyDelete(id);
+  }
+  showToast('success', 'Trash emptied', `${ids.length} item${ids.length !== 1 ? 's' : ''} permanently deleted`);
   renderContent();
 }

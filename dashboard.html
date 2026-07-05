@@ -86,7 +86,7 @@
         </div>
         <div class="toolbar-right">
           <div class="dropdown dropdown-sort">
-            <button class="btn-outline-soft dropdown-toggle" data-bs-toggle="dropdown" id="sortLabel">Sort: Name (↑)</button>
+            <button class="btn-outline-soft dropdown-toggle" data-bs-toggle="dropdown" id="sortLabel">Sort: Date (↑)</button>
             <ul class="dropdown-menu">
               <li><a class="dropdown-item" href="#" data-sort="name">Name</a></li>
               <li><a class="dropdown-item" href="#" data-sort="date">Upload date</a></li>
@@ -119,6 +119,8 @@
           <tbody id="listViewBody"></tbody>
         </table>
       </div>
+
+      <div id="settingsView" style="display:none;"></div>
     </main>
   </div>
 </div>
@@ -155,7 +157,10 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary btn-sm">Create</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="createFolderSubmitBtn">
+            <span id="createFolderBtnText">Create</span>
+            <span id="createFolderSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none;"></span>
+          </button>
         </div>
       </form>
     </div>

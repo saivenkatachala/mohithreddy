@@ -134,7 +134,7 @@ const AppScriptBackend = {
 
   async createFolder({ parentId, name }) {
     const data = await AppScriptBackend._post('createFolder', { parentId, name });
-    const node = { id: data.id, type: 'folder', name: data.name, createdAt: new Date().toISOString(), children: [] };
+    const node = { id: data.id, type: 'folder', name: data.name, createdAt: new Date().toISOString(), seq: nextSeq(), children: [] };
     const parent = findNode(parentId);
     if (parent) parent.children.push(node);
     return node;
@@ -198,6 +198,7 @@ const AppScriptBackend = {
       id: data.id, type: 'file', name: data.name,
       ext: fileMeta.ext, size: Number(data.size) || fileMeta.size,
       createdAt: new Date().toISOString(),
+      seq: nextSeq(),
       url: fileMeta.url, // local blob preview already available immediately
     };
     if (parent) parent.children.push(node);
@@ -389,7 +390,7 @@ const LiveBackend = {
       body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
     });
     const data = await res.json();
-    const node = { id: data.id, type: 'folder', name: data.name, createdAt: data.createdTime, children: [] };
+    const node = { id: data.id, type: 'folder', name: data.name, createdAt: data.createdTime, seq: nextSeq(), children: [] };
     const parent = findNode(parentId);
     if (parent) parent.children.push(node);
     return node;
@@ -486,6 +487,7 @@ const LiveBackend = {
       id: data.id, type: 'file', name: data.name,
       ext: fileMeta.ext, size: Number(data.size) || rawFile.size,
       createdAt: data.createdTime || new Date().toISOString(),
+      seq: nextSeq(),
       url: fileMeta.url, // local blob preview already available immediately
     };
     if (parent) parent.children.push(node);

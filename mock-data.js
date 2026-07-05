@@ -9,14 +9,23 @@
 let __id = 0;
 function nextId() { return 'n' + (++__id); }
 
+// Global, ever-increasing creation counter. Every node (seed data or
+// user-created) gets one of these when it's made. Sorting by "date"
+// falls back to this as a tiebreaker so items always land in true
+// creation order — first created stays on top, each new one lands
+// below the last — even if two items share the same timestamp.
+let __seq = 0;
+function nextSeq() { return ++__seq; }
+
 function folder(name, children = []) {
-  return { id: nextId(), type: 'folder', name, createdAt: randomDate(), children };
+  return { id: nextId(), type: 'folder', name, createdAt: randomDate(), seq: nextSeq(), children };
 }
 function file(name, sizeKB, ext, days = 5) {
   return {
     id: nextId(), type: 'file', name, ext,
     size: sizeKB * 1024,
     createdAt: randomDate(days),
+    seq: nextSeq(),
     url: null // populated with a blob URL when user uploads a real file
   };
 }
