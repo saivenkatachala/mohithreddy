@@ -1,0 +1,803 @@
+/* ============================================================
+   FILE EXPLORER — APP LOGIC
+   ============================================================ */
+
+// ---------- Auth guard ----------
+if (sessionStorage.getItem('fe_session') !== 'active') {
+  window.location.href = 'login.html';
+}
+
+// ---------- App state ----------
+const appState = {
+  currentFolderId: null,      // active folder in "My Files"
+  currentView: 'files',       // files | recent | favorites | trash
+  viewMode: 'grid',           // grid | list
+  sortKey: 'name',            // name | date | size | type
+  sortDir: 'asc',
+  searchQuery: '',
+  contextTargetId: null,
+  draggedId: null,
+};
+
+const EXT_ICON = {
+  png: ['fa-file-image', 'icon-image'], jpg: ['fa-file-image', 'icon-image'], jpeg: ['fa-file-image', 'icon-image'],
+  gif: ['fa-file-image', 'icon-image'], svg: ['fa-file-image', 'icon-image'], webp: ['fa-file-image', 'icon-image'],
+  pdf: ['fa-file-pdf', 'icon-pdf'],
+  doc: ['fa-file-word', 'icon-doc'], docx: ['fa-file-word', 'icon-doc'],
+  xls: ['fa-file-excel', 'icon-sheet'], xlsx: ['fa-file-excel', 'icon-sheet'], csv: ['fa-file-csv', 'icon-sheet'],
+  ppt: ['fa-file-powerpoint', 'icon-ppt'], pptx: ['fa-file-powerpoint', 'icon-ppt'],
+  zip: ['fa-file-zipper', 'icon-zip'], rar: ['fa-file-zipper', 'icon-zip'],
+  mp4: ['fa-file-video', 'icon-video'], mov: ['fa-file-video', 'icon-video'], avi: ['fa-file-video', 'icon-video'],
+  mp3: ['fa-file-audio', 'icon-audio'], wav: ['fa-file-audio', 'icon-audio'],
+  txt: ['fa-file-lines', 'icon-generic'], css: ['fa-file-code', 'icon-generic'], js: ['fa-file-code', 'icon-generic'],
+};
+function iconFor(node) {
+  if (node.type === 'folder') return ['fa-folder', 'icon-folder'];
+  return EXT_ICON[node.ext] || ['fa-file', 'icon-generic'];
+}
+
+// ---------- Utilities ----------
+function formatSize(bytes) {
+  if (bytes === 0 || bytes === undefined) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, val = bytes;
+  while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+  return `${val.toFixed(val < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+function debounce(fn, ms) {
+  let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ---------- Toasts ----------
+function showToast(type, title, msg) {
+  const stack = document.getElementById('toastStack');
+  const icons = { success: 'fa-circle-check', error: 'fa-circle-exclamation', info: 'fa-circle-info' };
+  const el = document.createElement('div');
+  el.className = 'app-toast' + (type !== 'success' ? ` toast-${type}` : '');
+  el.innerHTML = `
+    <i class="fa-solid ${icons[type] || icons.success}" style="color:${type === 'error' ? 'var(--color-danger)' : type === 'info' ? 'var(--color-secondary)' : 'var(--color-accent)'}"></i>
+    <div><div class="toast-title">${escapeHtml(title)}</div>${msg ? `<div class="toast-msg">${escapeHtml(msg)}</div>` : ''}</div>
+  `;
+  stack.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 250);
+  }, 3400);
+}
+
+// ---------- Init ----------
+document.addEventListener('DOMContentLoaded', async () => {
+  const email = sessionStorage.getItem('fe_user_email') || 'user@example.com';
+  document.getElementById('userEmailLabel').textContent = email;
+  document.getElementById('userAvatarInitial').textContent = email[0].toUpperCase();
+
+  await DriveAPI.getTree(); // fetches your real Drive tree via Apps Script once deployed; demo data until then
+  appState.currentFolderId = ROOT.id;
+
+  renderSidebarTree();
+  renderBreadcrumb();
+  renderContent();
+  wireGlobalEvents();
+  if (CONFIG.MODE === 'appscript' && CONFIG.APPS_SCRIPT_URL.includes('PASTE_YOUR_DEPLOYMENT_ID')) {
+    showToast('info', 'Demo data', 'Deploy Code.gs and set APPS_SCRIPT_URL in js/api.js to connect your real Drive — see README.');
+  }
+
+  if (sessionStorage.getItem('fe_login_toast')) {
+    showToast('success', 'Login successful', `Welcome back, ${email}`);
+    sessionStorage.removeItem('fe_login_toast');
+  }
+});
+
+// ============================================================
+// SIDEBAR — nav items + folder tree
+// ============================================================
+function renderSidebarTree() {
+  const container = document.getElementById('folderTree');
+  container.innerHTML = '';
+  container.appendChild(buildTreeNode(ROOT, true));
+}
+
+function buildTreeNode(node, isRoot = false) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tree-node';
+
+  const row = document.createElement('div');
+  row.className = 'tree-row' + (node.id === appState.currentFolderId && appState.currentView === 'files' ? ' active' : '');
+  row.dataset.id = node.id;
+  const hasChildren = node.children && node.children.some(c => c.type === 'folder');
+  const [iconClass, iconColor] = iconFor(node);
+
+  row.innerHTML = `
+    <span class="tree-caret ${hasChildren ? '' : 'leaf'}"><i class="fa-solid fa-chevron-right"></i></span>
+    <i class="fa-solid ${iconClass} tree-folder-icon"></i>
+    <span class="tree-label">${escapeHtml(node.name)}</span>
+  `;
+
+  row.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openFolder(node.id);
+  });
+
+  // Drag & drop target (move files/folders into this tree folder)
+  row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('active'); });
+  row.addEventListener('dragleave', () => { if (node.id !== appState.currentFolderId) row.classList.remove('active'); });
+  row.addEventListener('drop', async (e) => {
+    e.preventDefault(); row.classList.remove('active');
+    await handleDropMove(appState.draggedId, node.id);
+  });
+
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    openContextMenu(e.clientX, e.clientY, node);
+  });
+
+  wrap.appendChild(row);
+
+  const childWrap = document.createElement('div');
+  childWrap.className = 'tree-children' + (isRoot ? ' open' : '');
+  const folders = (node.children || []).filter(c => c.type === 'folder');
+  folders.forEach(c => childWrap.appendChild(buildTreeNode(c)));
+  wrap.appendChild(childWrap);
+
+  if (hasChildren) {
+    const caret = row.querySelector('.tree-caret');
+    if (isRoot) caret.classList.add('open');
+    caret.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = childWrap.classList.toggle('open');
+      caret.classList.toggle('open', open);
+    });
+  }
+
+  return wrap;
+}
+
+function openFolder(id) {
+  appState.currentFolderId = id;
+  appState.currentView = 'files';
+  document.getElementById('searchInput').value = '';
+  appState.searchQuery = '';
+  setActiveNavItem('nav-files');
+  renderSidebarTree();
+  renderBreadcrumb();
+  renderContent();
+}
+
+function setActiveNavItem(id) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  const el = document.getElementById(id);
+  if (el) el.classList.add('active');
+}
+
+// ============================================================
+// BREADCRUMB
+// ============================================================
+function renderBreadcrumb() {
+  const bar = document.getElementById('breadcrumbBar');
+  bar.innerHTML = '';
+
+  if (appState.currentView !== 'files') {
+    const labels = { recent: 'Recent', favorites: 'Favorites', trash: 'Trash' };
+    bar.innerHTML = `<span class="breadcrumb-item current"><i class="fa-solid fa-house me-1"></i>${labels[appState.currentView]}</span>`;
+    return;
+  }
+
+  const trail = getPathNodes(appState.currentFolderId) || [ROOT];
+  trail.forEach((node, i) => {
+    const isLast = i === trail.length - 1;
+    const span = document.createElement('span');
+    span.className = 'breadcrumb-item' + (isLast ? ' current' : '');
+    span.innerHTML = i === 0 ? `<i class="fa-solid fa-house me-1"></i>${escapeHtml(node.name)}` : escapeHtml(node.name);
+    if (!isLast) span.addEventListener('click', () => openFolder(node.id));
+    bar.appendChild(span);
+    if (!isLast) {
+      const sep = document.createElement('span');
+      sep.className = 'breadcrumb-sep';
+      sep.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+      bar.appendChild(sep);
+    }
+  });
+}
+
+// ============================================================
+// CONTENT RENDERING (grid / list)
+// ============================================================
+function getViewItems() {
+  if (appState.searchQuery.trim()) {
+    return searchTree(appState.searchQuery.trim().toLowerCase());
+  }
+  if (appState.currentView === 'recent') {
+    return STATE.recentIds.map(id => findNode(id)).filter(Boolean);
+  }
+  if (appState.currentView === 'favorites') {
+    return [...STATE.favorites].map(id => findNode(id)).filter(Boolean);
+  }
+  if (appState.currentView === 'trash') {
+    return STATE.trash.map(t => t.item);
+  }
+  const folder = findNode(appState.currentFolderId) || ROOT;
+  return folder.children || [];
+}
+
+function searchTree(query) {
+  const all = collectAll(ROOT).filter(n => n.id !== ROOT.id);
+  return all.filter(n => n.name.toLowerCase().includes(query));
+}
+
+function sortItems(items) {
+  const dir = appState.sortDir === 'asc' ? 1 : -1;
+  const arr = [...items];
+  arr.sort((a, b) => {
+    // folders first always, except when explicitly sorting by type
+    if (appState.sortKey !== 'type' && a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+    switch (appState.sortKey) {
+      case 'name': return a.name.localeCompare(b.name) * dir;
+      case 'date': return (new Date(a.createdAt) - new Date(b.createdAt)) * dir;
+      case 'size': return ((a.size || 0) - (b.size || 0)) * dir;
+      case 'type': {
+        const ta = a.type === 'folder' ? 'folder' : (a.ext || '');
+        const tb = b.type === 'folder' ? 'folder' : (b.ext || '');
+        return ta.localeCompare(tb) * dir;
+      }
+      default: return 0;
+    }
+  });
+  return arr;
+}
+
+function renderContent() {
+  const items = sortItems(getViewItems());
+  const gridEl = document.getElementById('gridView');
+  const listBody = document.getElementById('listViewBody');
+  const emptyEl = document.getElementById('emptyState');
+
+  gridEl.innerHTML = '';
+  listBody.innerHTML = '';
+
+  document.getElementById('itemCountLabel').textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
+
+  if (items.length === 0) {
+    emptyEl.style.display = 'block';
+    gridEl.style.display = 'none';
+    document.getElementById('listViewWrap').style.display = 'none';
+    const msgs = {
+      files: ['fa-folder-open', 'This folder is empty', 'Upload a file or create a new folder to get started.'],
+      recent: ['fa-clock-rotate-left', 'No recent files yet', 'Files you upload or open will show up here.'],
+      favorites: ['fa-star', 'No favorites yet', 'Star files or folders to find them quickly.'],
+      trash: ['fa-trash', 'Trash is empty', 'Deleted items will appear here.'],
+    };
+    const key = appState.searchQuery.trim() ? 'search' : appState.currentView;
+    const [icon, title, sub] = msgs[key] || ['fa-magnifying-glass', 'No results found', 'Try a different search term.'];
+    emptyEl.innerHTML = `<i class="fa-solid ${icon}"></i><div class="fw-semibold text-dark mb-1">${title}</div><div>${sub}</div>`;
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  if (appState.viewMode === 'grid') {
+    gridEl.style.display = 'grid';
+    document.getElementById('listViewWrap').style.display = 'none';
+    items.forEach(item => gridEl.appendChild(buildFileCard(item)));
+  } else {
+    gridEl.style.display = 'none';
+    document.getElementById('listViewWrap').style.display = 'block';
+    items.forEach(item => listBody.appendChild(buildFileRow(item)));
+  }
+}
+
+function buildFileCard(item) {
+  const [iconClass, iconColor] = iconFor(item);
+  const card = document.createElement('div');
+  card.className = 'file-card';
+  card.draggable = appState.currentView === 'files';
+  card.dataset.id = item.id;
+
+  const isFav = STATE.favorites.has(item.id);
+  card.innerHTML = `
+    <div class="card-actions dropdown">
+      <button class="icon-btn" style="width:26px;height:26px;" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
+        <i class="fa-solid fa-ellipsis-vertical" style="font-size:0.8rem;"></i>
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end"></ul>
+    </div>
+    <div class="card-icon"><i class="fa-solid ${iconClass} ${iconColor}"></i></div>
+    <div class="card-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)} ${isFav ? '<i class="fa-solid fa-star text-warning" style="font-size:0.7rem;"></i>' : ''}</div>
+    <div class="card-meta">${item.type === 'folder' ? `${(item.children || []).length} items` : formatSize(item.size)} · ${formatDate(item.createdAt)}</div>
+  `;
+
+  populateDropdown(card.querySelector('.dropdown-menu'), item);
+
+  card.addEventListener('dblclick', () => activateItem(item));
+  card.addEventListener('click', (e) => { if (!e.target.closest('.dropdown')) selectCard(card); });
+  card.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(e.clientX, e.clientY, item); });
+
+  // Drag source
+  card.addEventListener('dragstart', (e) => {
+    appState.draggedId = item.id;
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  // Drag target (folders only)
+  if (item.type === 'folder') {
+    card.addEventListener('dragover', (e) => { e.preventDefault(); card.classList.add('drag-over'); });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('drop', async (e) => {
+      e.preventDefault(); card.classList.remove('drag-over');
+      await handleDropMove(appState.draggedId, item.id);
+    });
+  }
+
+  return card;
+}
+
+function buildFileRow(item) {
+  const [iconClass, iconColor] = iconFor(item);
+  const tr = document.createElement('tr');
+  tr.dataset.id = item.id;
+  tr.draggable = appState.currentView === 'files';
+  const isFav = STATE.favorites.has(item.id);
+
+  tr.innerHTML = `
+    <td class="file-name-cell"><i class="fa-solid ${iconClass} ${iconColor}"></i> ${escapeHtml(item.name)} ${isFav ? '<i class="fa-solid fa-star text-warning" style="font-size:0.7rem;"></i>' : ''}</td>
+    <td>${formatDate(item.createdAt)}</td>
+    <td>${item.type === 'folder' ? '—' : formatSize(item.size)}</td>
+    <td>${item.type === 'folder' ? 'Folder' : (item.ext || '').toUpperCase()}</td>
+    <td class="dropdown">
+      <button class="icon-btn" style="width:30px;height:30px;" data-bs-toggle="dropdown" onclick="event.stopPropagation()">
+        <i class="fa-solid fa-ellipsis-vertical" style="font-size:0.85rem;"></i>
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end"></ul>
+    </td>
+  `;
+  populateDropdown(tr.querySelector('.dropdown-menu'), item);
+
+  tr.addEventListener('dblclick', () => activateItem(item));
+  tr.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(e.clientX, e.clientY, item); });
+  tr.addEventListener('dragstart', (e) => { appState.draggedId = item.id; e.dataTransfer.effectAllowed = 'move'; });
+  if (item.type === 'folder') {
+    tr.addEventListener('dragover', (e) => e.preventDefault());
+    tr.addEventListener('drop', async (e) => { e.preventDefault(); await handleDropMove(appState.draggedId, item.id); });
+  }
+
+  return tr;
+}
+
+function selectCard(card) {
+  document.querySelectorAll('.file-card').forEach(c => c.style.outline = '');
+  card.style.outline = `2px solid var(--color-secondary)`;
+}
+
+function activateItem(item) {
+  if (item.type === 'folder' && appState.currentView === 'files') {
+    openFolder(item.id);
+  } else if (item.type === 'file') {
+    openPreview(item);
+  }
+}
+
+function populateDropdown(ul, item) {
+  const actions = actionsFor(item);
+  ul.innerHTML = actions.map(a =>
+    a === 'divider'
+      ? `<li><hr class="dropdown-divider"></li>`
+      : `<li><a class="dropdown-item ${a.danger ? 'text-danger' : ''}" href="#" data-action="${a.key}"><i class="fa-solid ${a.icon} me-2"></i>${a.label}</a></li>`
+  ).join('');
+  ul.querySelectorAll('[data-action]').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      handleAction(link.dataset.action, item);
+    });
+  });
+}
+
+function actionsFor(item) {
+  if (appState.currentView === 'trash') {
+    return [
+      { key: 'restore', icon: 'fa-rotate-left', label: 'Restore' },
+      { key: 'delete-forever', icon: 'fa-trash', label: 'Delete forever', danger: true },
+    ];
+  }
+  if (item.type === 'folder') {
+    return [
+      { key: 'open', icon: 'fa-folder-open', label: 'Open' },
+      { key: 'new-folder', icon: 'fa-folder-plus', label: 'New folder inside' },
+      { key: 'upload', icon: 'fa-upload', label: 'Upload file here' },
+      'divider',
+      { key: 'rename', icon: 'fa-pen', label: 'Rename' },
+      { key: 'favorite', icon: 'fa-star', label: STATE.favorites.has(item.id) ? 'Unfavorite' : 'Add to favorites' },
+      { key: 'properties', icon: 'fa-circle-info', label: 'Properties' },
+      'divider',
+      { key: 'delete', icon: 'fa-trash', label: 'Delete', danger: true },
+    ];
+  }
+  return [
+    { key: 'view', icon: 'fa-eye', label: 'View' },
+    { key: 'download', icon: 'fa-download', label: 'Download' },
+    'divider',
+    { key: 'rename', icon: 'fa-pen', label: 'Rename' },
+    { key: 'share', icon: 'fa-share-nodes', label: 'Share' },
+    { key: 'favorite', icon: 'fa-star', label: STATE.favorites.has(item.id) ? 'Unfavorite' : 'Add to favorites' },
+    { key: 'properties', icon: 'fa-circle-info', label: 'Properties' },
+    'divider',
+    { key: 'delete', icon: 'fa-trash', label: 'Delete', danger: true },
+  ];
+}
+
+async function handleAction(action, item) {
+  switch (action) {
+    case 'open': openFolder(item.id); break;
+    case 'view': openPreview(item); break;
+    case 'new-folder': openCreateFolderModal(item.id); break;
+    case 'upload': triggerUpload(item.id); break;
+    case 'rename': openRenameModal(item); break;
+    case 'download': downloadFile(item); break;
+    case 'share': openShareModal(item); break;
+    case 'properties': openPropertiesModal(item); break;
+    case 'favorite': {
+      await DriveAPI.toggleFavorite(item.id);
+      showToast('success', STATE.favorites.has(item.id) ? 'Added to favorites' : 'Removed from favorites', item.name);
+      renderContent();
+      break;
+    }
+    case 'delete': {
+      await DriveAPI.deleteNode(item.id);
+      showToast('success', item.type === 'folder' ? 'Folder deleted' : 'File deleted', `"${item.name}" moved to Trash`);
+      renderSidebarTree(); renderContent();
+      break;
+    }
+    case 'restore': {
+      await DriveAPI.restoreNode(item.id);
+      showToast('success', 'Restored', `"${item.name}" restored`);
+      renderSidebarTree(); renderContent();
+      break;
+    }
+    case 'delete-forever': {
+      await DriveAPI.permanentlyDelete(item.id);
+      showToast('success', 'Permanently deleted', item.name);
+      renderContent();
+      break;
+    }
+  }
+}
+
+async function handleDropMove(draggedId, targetFolderId) {
+  if (!draggedId || draggedId === targetFolderId) return;
+  try {
+    await DriveAPI.moveNode(draggedId, targetFolderId);
+    const node = findNode(draggedId);
+    showToast('success', 'Moved', `"${node ? node.name : ''}" moved successfully`);
+    renderSidebarTree(); renderContent();
+  } catch (err) {
+    showToast('error', 'Move failed', String(err));
+  }
+  appState.draggedId = null;
+}
+
+// ============================================================
+// CONTEXT MENU (right click)
+// ============================================================
+function openContextMenu(x, y, item) {
+  appState.contextTargetId = item.id;
+  const menu = document.getElementById('contextMenu');
+  const actions = actionsFor(item);
+  menu.innerHTML = actions.map(a =>
+    a === 'divider'
+      ? `<div class="context-menu-divider"></div>`
+      : `<div class="context-menu-item ${a.danger ? 'danger' : ''}" data-action="${a.key}"><i class="fa-solid ${a.icon}"></i>${a.label}</div>`
+  ).join('');
+  menu.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => { closeContextMenu(); handleAction(el.dataset.action, item); });
+  });
+
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
+  menu.classList.add('show');
+  const menuHeight = menu.offsetHeight;
+  menu.style.left = Math.min(x, window.innerWidth - 210) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - menuHeight - 20) + 'px';
+}
+function closeContextMenu() {
+  document.getElementById('contextMenu').classList.remove('show');
+}
+
+// ============================================================
+// MODALS: create folder / rename / properties / share / preview
+// ============================================================
+let modalTargetParentId = null;
+
+function openCreateFolderModal(parentId) {
+  modalTargetParentId = parentId ?? appState.currentFolderId;
+  document.getElementById('newFolderNameInput').value = '';
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('createFolderModal')).show();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('createFolderForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('newFolderNameInput').value.trim();
+    if (!name) return;
+    await DriveAPI.createFolder(modalTargetParentId, name);
+    bootstrap.Modal.getInstance(document.getElementById('createFolderModal')).hide();
+    showToast('success', 'Folder created', `"${name}" was created`);
+    renderSidebarTree(); renderContent();
+  });
+
+  document.getElementById('renameForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('renameInput').value.trim();
+    if (!name || !renameTargetId) return;
+    await DriveAPI.renameNode(renameTargetId, name);
+    bootstrap.Modal.getInstance(document.getElementById('renameModal')).hide();
+    showToast('success', 'Renamed', `Renamed to "${name}"`);
+    renderSidebarTree(); renderContent(); renderBreadcrumb();
+  });
+});
+
+let renameTargetId = null;
+function openRenameModal(item) {
+  renameTargetId = item.id;
+  const input = document.getElementById('renameInput');
+  input.value = item.name;
+  document.getElementById('renameModalLabel').textContent = `Rename ${item.type === 'folder' ? 'folder' : 'file'}`;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('renameModal')).show();
+  setTimeout(() => { input.focus(); input.select(); }, 300);
+}
+
+function openPropertiesModal(item) {
+  const body = document.getElementById('propertiesBody');
+  const [iconClass, iconColor] = iconFor(item);
+  body.innerHTML = `
+    <div class="text-center mb-3"><i class="fa-solid ${iconClass} ${iconColor}" style="font-size:2.6rem;"></i></div>
+    <table class="table table-sm">
+      <tr><th style="width:130px;">Name</th><td>${escapeHtml(item.name)}</td></tr>
+      <tr><th>Type</th><td>${item.type === 'folder' ? 'Folder' : (item.ext || 'File').toUpperCase()}</td></tr>
+      ${item.type === 'file' ? `<tr><th>Size</th><td>${formatSize(item.size)}</td></tr>` : `<tr><th>Contents</th><td>${(item.children || []).length} items</td></tr>`}
+      <tr><th>Created</th><td>${formatDate(item.createdAt)}</td></tr>
+      <tr><th>Location</th><td>${(getPathNodes(item.id) || []).map(n => n.name).join(' / ')}</td></tr>
+    </table>
+  `;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('propertiesModal')).show();
+}
+
+function openShareModal(item) {
+  const link = `https://drive.example.com/share/${item.id}`;
+  document.getElementById('shareLinkInput').value = link;
+  document.getElementById('shareModalLabel').textContent = `Share "${item.name}"`;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('shareModal')).show();
+}
+function copyShareLink() {
+  const input = document.getElementById('shareLinkInput');
+  input.select();
+  navigator.clipboard?.writeText(input.value);
+  showToast('info', 'Link copied', 'Share link copied to clipboard');
+}
+
+async function openPreview(item) {
+  const body = document.getElementById('previewBody');
+  document.getElementById('previewModalLabel').textContent = item.name;
+  body.innerHTML = `<div class="preview-fallback"><i class="fa-solid fa-spinner fa-spin"></i>Loading preview…</div>`;
+  document.getElementById('previewDownloadBtn').onclick = () => downloadFile(item);
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('previewModal')).show();
+
+  let url;
+  try {
+    url = await DriveAPI.ensureFileUrl(item);
+  } catch (err) {
+    body.innerHTML = `<div class="preview-fallback"><i class="fa-solid fa-triangle-exclamation"></i>Couldn't load preview.<br><span class="text-white-50" style="font-size:0.8rem;">${escapeHtml(String(err.message || err))}</span></div>`;
+    return;
+  }
+
+  let html = '';
+  if (item.ext && ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(item.ext) && url) {
+    html = `<img src="${url}" alt="${escapeHtml(item.name)}">`;
+  } else if (item.ext === 'pdf' && url) {
+    html = `<iframe src="${url}"></iframe>`;
+  } else if (['mp4', 'mov', 'avi', 'webm'].includes(item.ext) && url) {
+    html = `<video src="${url}" controls></video>`;
+  } else if (['mp3', 'wav'].includes(item.ext) && url) {
+    html = `<div class="preview-fallback"><i class="fa-solid fa-music"></i>${escapeHtml(item.name)}<br><audio src="${url}" controls class="mt-3"></audio></div>`;
+  } else {
+    const [iconClass] = iconFor(item);
+    html = `<div class="preview-fallback"><i class="fa-solid ${iconClass}"></i>Preview not available for this file type.<br><span class="text-white-50" style="font-size:0.8rem;">Download the file to view it.</span></div>`;
+  }
+  body.innerHTML = html;
+
+  if (!STATE.recentIds.includes(item.id)) STATE.recentIds.unshift(item.id);
+}
+
+async function downloadFile(item) {
+  let url = item.url;
+  try {
+    url = await DriveAPI.ensureFileUrl(item);
+  } catch (err) {
+    showToast('error', 'Download failed', String(err.message || err));
+    return;
+  }
+  if (url) {
+    const a = document.createElement('a');
+    a.href = url; a.download = item.name;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  showToast('info', 'Download started', item.name);
+}
+
+// ============================================================
+// UPLOAD (file input + drag & drop) with simulated progress
+// ============================================================
+function triggerUpload(parentId) {
+  modalTargetParentId = parentId ?? appState.currentFolderId;
+  document.getElementById('fileInput').click();
+}
+
+function handleFiles(fileList) {
+  const parentId = modalTargetParentId ?? appState.currentFolderId;
+  const panel = document.getElementById('uploadPanel');
+  const list = document.getElementById('uploadList');
+  panel.style.display = 'block';
+
+  [...fileList].forEach(f => {
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const row = document.createElement('div');
+    row.className = 'upload-item';
+    row.innerHTML = `
+      <div class="upload-item-name"><span>${escapeHtml(f.name)}</span><span class="pct">0%</span></div>
+      <div class="upload-progress-track"><div class="upload-progress-fill"></div></div>
+    `;
+    list.appendChild(row);
+    const fill = row.querySelector('.upload-progress-fill');
+    const pct = row.querySelector('.pct');
+
+    let progress = 0;
+    const url = URL.createObjectURL(f);
+    const timer = setInterval(async () => {
+      progress += Math.random() * 25 + 10;
+      if (progress >= 100) {
+        progress = 100;
+        clearInterval(timer);
+        fill.style.width = '100%'; pct.textContent = '100%';
+        await DriveAPI.uploadFile(parentId, { name: f.name, size: f.size, ext, url, rawFile: f });
+        showToast('success', 'File uploaded', f.name);
+        renderContent();
+        setTimeout(() => {
+          row.remove();
+          if (!list.children.length) panel.style.display = 'none';
+        }, 900);
+      } else {
+        fill.style.width = progress + '%'; pct.textContent = Math.round(progress) + '%';
+      }
+    }, 220);
+  });
+}
+
+// ============================================================
+// SEARCH / SORT / VIEW TOGGLE
+// ============================================================
+function wireGlobalEvents() {
+  document.getElementById('searchInput').addEventListener('input', debounce((e) => {
+    appState.searchQuery = e.target.value;
+    renderBreadcrumbForSearch();
+    renderContent();
+  }, 180));
+
+  document.querySelectorAll('[data-sort]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      const key = el.dataset.sort;
+      if (appState.sortKey === key) appState.sortDir = appState.sortDir === 'asc' ? 'desc' : 'asc';
+      else { appState.sortKey = key; appState.sortDir = 'asc'; }
+      document.getElementById('sortLabel').textContent = `Sort: ${key[0].toUpperCase() + key.slice(1)} (${appState.sortDir === 'asc' ? '↑' : '↓'})`;
+      renderContent();
+    });
+  });
+
+  document.getElementById('gridBtn').addEventListener('click', () => setViewMode('grid'));
+  document.getElementById('listBtn').addEventListener('click', () => setViewMode('list'));
+  document.querySelectorAll('.file-table th[data-colsort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.colsort;
+      if (appState.sortKey === key) appState.sortDir = appState.sortDir === 'asc' ? 'desc' : 'asc';
+      else { appState.sortKey = key; appState.sortDir = 'asc'; }
+      renderContent();
+    });
+  });
+
+  document.getElementById('fileInput').addEventListener('change', (e) => {
+    if (e.target.files.length) handleFiles(e.target.files);
+    e.target.value = '';
+  });
+
+  document.getElementById('uploadFileBtn').addEventListener('click', () => triggerUpload(appState.currentFolderId));
+  document.getElementById('newFolderBtn').addEventListener('click', () => openCreateFolderModal(appState.currentFolderId));
+
+  // Sidebar nav items
+  document.getElementById('nav-files').addEventListener('click', () => openFolder(ROOT.id));
+  document.getElementById('nav-recent').addEventListener('click', () => switchView('recent', 'nav-recent'));
+  document.getElementById('nav-favorites').addEventListener('click', () => switchView('favorites', 'nav-favorites'));
+  document.getElementById('nav-trash').addEventListener('click', () => switchView('trash', 'nav-trash'));
+  document.getElementById('nav-dashboard').addEventListener('click', () => openFolder(ROOT.id));
+  document.getElementById('nav-settings').addEventListener('click', () => {
+    setActiveNavItem('nav-settings');
+    showToast('info', 'Settings', 'Settings panel isn\'t built out in this demo yet.');
+  });
+
+  // Global drag & drop overlay for uploads anywhere in content area
+  const contentArea = document.getElementById('contentArea');
+  let dragCounter = 0;
+  const overlay = document.getElementById('dropzoneOverlay');
+  ['dragenter'].forEach(evt => window.addEventListener(evt, (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) {
+      dragCounter++;
+      overlay.classList.add('active');
+    }
+  }));
+  window.addEventListener('dragleave', (e) => {
+    dragCounter--;
+    if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('active'); }
+  });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    overlay.classList.remove('active');
+    if (e.dataTransfer.files.length) {
+      modalTargetParentId = appState.currentFolderId;
+      handleFiles(e.dataTransfer.files);
+    }
+  });
+
+  // Sidebar collapse (desktop) & mobile drawer
+  document.getElementById('sidebarCollapseBtn').addEventListener('click', () => {
+    document.getElementById('sidebar').classList.toggle('collapsed');
+    document.getElementById('mainCol').classList.toggle('sidebar-collapsed');
+  });
+  document.getElementById('mobileMenuBtn').addEventListener('click', () => {
+    document.getElementById('sidebar').classList.add('mobile-open');
+    document.getElementById('sidebarBackdrop').classList.add('show');
+  });
+  document.getElementById('sidebarBackdrop').addEventListener('click', closeMobileSidebar);
+
+  document.getElementById('logoutBtn').addEventListener('click', () => {
+    sessionStorage.removeItem('fe_session');
+    sessionStorage.removeItem('fe_user_email');
+    window.location.href = 'login.html';
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.context-menu')) closeContextMenu();
+  });
+  window.addEventListener('scroll', closeContextMenu, true);
+}
+
+function closeMobileSidebar() {
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('sidebarBackdrop').classList.remove('show');
+}
+
+function switchView(view, navId) {
+  appState.currentView = view;
+  document.getElementById('searchInput').value = '';
+  appState.searchQuery = '';
+  setActiveNavItem(navId);
+  renderSidebarTree();
+  renderBreadcrumb();
+  renderContent();
+  closeMobileSidebar();
+}
+
+function renderBreadcrumbForSearch() {
+  if (!appState.searchQuery.trim()) { renderBreadcrumb(); return; }
+  const bar = document.getElementById('breadcrumbBar');
+  bar.innerHTML = `<span class="breadcrumb-item current"><i class="fa-solid fa-magnifying-glass me-1"></i>Search results for "${escapeHtml(appState.searchQuery)}"</span>`;
+}
+
+function setViewMode(mode) {
+  appState.viewMode = mode;
+  document.getElementById('gridBtn').classList.toggle('active', mode === 'grid');
+  document.getElementById('listBtn').classList.toggle('active', mode === 'list');
+  renderContent();
+}

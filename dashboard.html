@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>File Explorer — Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+<link href="style.css" rel="stylesheet">
+<link rel="icon" href="filelogo.png">
+</head>
+<body>
+
+<div class="dropzone-overlay" id="dropzoneOverlay">
+  <div class="dropzone-inner">
+    <i class="fa-solid fa-cloud-arrow-up"></i>
+    <div class="fw-semibold">Drop files to upload</div>
+    <div style="font-size:0.85rem;opacity:0.75;">They'll be added to the current folder</div>
+  </div>
+</div>
+
+<div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+<div class="app-shell">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon"><i class="fa-solid fa-folder-tree"></i></div>
+      <span class="brand-name">File Explorer</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-item active" id="nav-dashboard"><i class="fa-solid fa-gauge"></i><span class="nav-label">Dashboard</span></div>
+      <div class="nav-item" id="newFolderBtnSidebar" onclick="openCreateFolderModal()"><i class="fa-solid fa-folder-plus"></i><span class="nav-label">Create Folder</span></div>
+      <div class="nav-item" id="nav-files"><i class="fa-solid fa-folder"></i><span class="nav-label">My Files</span></div>
+      <div class="nav-item" id="nav-recent"><i class="fa-solid fa-clock-rotate-left"></i><span class="nav-label">Recent</span></div>
+      <div class="nav-item" id="nav-favorites"><i class="fa-solid fa-star"></i><span class="nav-label">Favorites</span></div>
+      <div class="nav-item" id="nav-trash"><i class="fa-solid fa-trash"></i><span class="nav-label">Trash</span></div>
+      <div class="nav-item" id="nav-settings"><i class="fa-solid fa-gear"></i><span class="nav-label">Settings</span></div>
+    </nav>
+
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-section-title">Folders</div>
+    <div class="folder-tree" id="folderTree"></div>
+  </aside>
+
+  <!-- ============ MAIN COLUMN ============ -->
+  <div class="main-col" id="mainCol">
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <button class="icon-btn d-none d-lg-flex" id="sidebarCollapseBtn"><i class="fa-solid fa-bars"></i></button>
+      <button class="icon-btn d-lg-none" id="mobileMenuBtn"><i class="fa-solid fa-bars"></i></button>
+
+      <div class="search-box">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" id="searchInput" placeholder="Search files and folders...">
+      </div>
+
+      <div class="ms-auto d-flex align-items-center gap-2">
+        <button class="icon-btn">
+          <i class="fa-regular fa-bell"></i>
+          <span class="notif-dot"></span>
+        </button>
+        <div class="user-chip dropdown">
+          <div class="user-avatar" id="userAvatarInitial">U</div>
+          <div class="d-none d-md-block" style="font-size:0.82rem;">
+            <div class="fw-semibold" id="userEmailLabel" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">user@example.com</div>
+            <div class="text-muted" style="font-size:0.72rem;">Signed in</div>
+          </div>
+          <button class="icon-btn" id="logoutBtn" title="Logout"><i class="fa-solid fa-arrow-right-from-bracket"></i></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <main class="content-area" id="contentArea">
+      <div class="breadcrumb-bar" id="breadcrumbBar"></div>
+
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <button class="btn-primary-grad" id="uploadFileBtn"><i class="fa-solid fa-upload"></i> Upload</button>
+          <button class="btn-outline-soft" id="newFolderBtn"><i class="fa-solid fa-folder-plus"></i> New folder</button>
+          <span class="text-muted" id="itemCountLabel" style="font-size:0.82rem;"></span>
+        </div>
+        <div class="toolbar-right">
+          <div class="dropdown dropdown-sort">
+            <button class="btn-outline-soft dropdown-toggle" data-bs-toggle="dropdown" id="sortLabel">Sort: Name (↑)</button>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item" href="#" data-sort="name">Name</a></li>
+              <li><a class="dropdown-item" href="#" data-sort="date">Upload date</a></li>
+              <li><a class="dropdown-item" href="#" data-sort="size">File size</a></li>
+              <li><a class="dropdown-item" href="#" data-sort="type">File type</a></li>
+            </ul>
+          </div>
+          <div class="view-toggle">
+            <button class="active" id="gridBtn"><i class="fa-solid fa-table-cells-large"></i></button>
+            <button id="listBtn"><i class="fa-solid fa-list"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty-state" id="emptyState" style="display:none;"></div>
+
+      <div class="file-grid" id="gridView"></div>
+
+      <div id="listViewWrap" style="display:none;overflow-x:auto;">
+        <table class="file-table">
+          <thead>
+            <tr>
+              <th data-colsort="name">Name</th>
+              <th data-colsort="date">Uploaded</th>
+              <th data-colsort="size">Size</th>
+              <th data-colsort="type">Type</th>
+              <th style="width:60px;"></th>
+            </tr>
+          </thead>
+          <tbody id="listViewBody"></tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</div>
+
+<input type="file" id="fileInput" multiple style="display:none;">
+
+<!-- ============ Context menu ============ -->
+<div class="context-menu" id="contextMenu"></div>
+
+<!-- ============ Upload progress panel ============ -->
+<div class="upload-panel" id="uploadPanel" style="display:none;">
+  <div class="upload-panel-header">
+    <span><i class="fa-solid fa-cloud-arrow-up me-2"></i>Uploading</span>
+    <i class="fa-solid fa-xmark" style="cursor:pointer;" onclick="document.getElementById('uploadPanel').style.display='none'"></i>
+  </div>
+  <div class="upload-list" id="uploadList"></div>
+</div>
+
+<!-- ============ Toast stack ============ -->
+<div class="toast-stack" id="toastStack"></div>
+
+<!-- ============ Modal: Create Folder ============ -->
+<div class="modal fade" id="createFolderModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="createFolderForm">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fa-solid fa-folder-plus me-2 text-primary"></i>New folder</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <label class="form-label small text-muted">Folder name</label>
+          <input type="text" class="form-control" id="newFolderNameInput" placeholder="e.g. Marketing Assets" required>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Modal: Rename ============ -->
+<div class="modal fade" id="renameModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="renameForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="renameModalLabel"><i class="fa-solid fa-pen me-2 text-primary"></i>Rename</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="text" class="form-control" id="renameInput" required>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Modal: Properties ============ -->
+<div class="modal fade" id="propertiesModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="fa-solid fa-circle-info me-2 text-primary"></i>Properties</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="propertiesBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Modal: Share ============ -->
+<div class="modal fade" id="shareModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="shareModalLabel"><i class="fa-solid fa-share-nodes me-2 text-primary"></i>Share</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label small text-muted">Shareable link</label>
+        <div class="input-group">
+          <input type="text" class="form-control" id="shareLinkInput" readonly>
+          <button class="btn btn-outline-secondary" type="button" onclick="copyShareLink()"><i class="fa-solid fa-copy"></i></button>
+        </div>
+        <p class="text-muted small mt-2 mb-0">Demo link — wire this up to real Drive sharing permissions in <code>Code.gs</code>.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary btn-sm" data-bs-dismiss="modal">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Modal: Preview ============ -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="previewModalLabel">Preview</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body preview-modal-body" id="previewBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary btn-sm" id="previewDownloadBtn"><i class="fa-solid fa-download me-1"></i>Download</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="mock-data.js"></script>
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>File Explorer — Sign In</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+<link href="style.css" rel="stylesheet">
+<link rel="icon" href="filelogo.png">
+</head>
+<body class="login-page">
+
+  <div class="login-bg-orb orb-1"></div>
+  <div class="login-bg-orb orb-2"></div>
+  <div class="login-bg-orb orb-3"></div>
+
+  <div class="login-card">
+    <div class="login-logo"><i class="fa-solid fa-folder-tree"></i></div>
+    <h1 class="login-title">File Explorer</h1>
+    <p class="login-subtitle">Sign in to access your Drive workspace</p>
+
+    <div id="loginError" class="login-error" style="display:none;">
+      <i class="fa-solid fa-circle-exclamation"></i>
+      <span id="loginErrorText">Invalid email or password.</span>
+    </div>
+
+    <form id="loginForm" novalidate>
+      <div class="mb-3 input-icon-wrap">
+        <i class="fa-solid fa-envelope"></i>
+        <input type="email" class="form-control glass-input" id="email" placeholder="Email address" autocomplete="username" required>
+      </div>
+      <div class="mb-2 input-icon-wrap">
+        <i class="fa-solid fa-lock"></i>
+        <input type="password" class="form-control glass-input" id="password" placeholder="Password" autocomplete="current-password" required>
+      </div>
+      <div class="d-flex justify-content-between align-items-center mb-4" style="font-size:0.8rem;">
+        <label class="text-white-50 d-flex align-items-center gap-2" style="cursor:pointer;">
+          <input type="checkbox" id="remember" class="form-check-input mt-0"> Remember me
+        </label>
+        <a href="#" class="text-white-50" style="text-decoration:underline;">Forgot password?</a>
+      </div>
+      <button type="submit" class="btn btn-login ripple" id="loginBtn">
+        <span id="loginBtnText">Sign In</span>
+        <span id="loginSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none;"></span>
+      </button>
+    </form>
+
+    <p class="login-hint">Demo credentials are pre-filled for this build.<br>Not for production use — see README.</p>
+  </div>
+
+<script>
+  // ---- Demo login (client-side only — see project README for security notes) ----
+  const VALID_EMAIL = "mohithreddy@gmail.com";
+  const VALID_PASSWORD = "Mohith@04";
+
+  const form = document.getElementById('loginForm');
+  const errorBox = document.getElementById('loginError');
+  const errorText = document.getElementById('loginErrorText');
+  const btn = document.getElementById('loginBtn');
+  const btnText = document.getElementById('loginBtnText');
+  const spinner = document.getElementById('loginSpinner');
+
+  // Pre-fill for convenience in this demo build
+  document.getElementById('email').value = VALID_EMAIL;
+
+  function showError(msg) {
+    errorText.textContent = msg;
+    errorBox.style.display = 'flex';
+    errorBox.classList.remove('login-error');
+    void errorBox.offsetWidth;
+    errorBox.classList.add('login-error');
+  }
+
+  // Ripple effect
+  document.querySelectorAll('.ripple').forEach(el => {
+    el.addEventListener('click', function (e) {
+      const rect = this.getBoundingClientRect();
+      const circle = document.createElement('span');
+      const size = Math.max(rect.width, rect.height);
+      circle.style.width = circle.style.height = size + 'px';
+      circle.style.left = (e.clientX - rect.left - size / 2) + 'px';
+      circle.style.top = (e.clientY - rect.top - size / 2) + 'px';
+      circle.classList.add('ripple-effect');
+      this.appendChild(circle);
+      setTimeout(() => circle.remove(), 600);
+    });
+  });
+
+  // Already logged in? Skip straight to dashboard.
+  if (sessionStorage.getItem('fe_session') === 'active') {
+    window.location.href = 'dashboard.html';
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    errorBox.style.display = 'none';
+
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+
+    if (!email || !password) {
+      showError('Please enter both email and password.');
+      return;
+    }
+
+    btnText.textContent = 'Signing in...';
+    spinner.style.display = 'inline-block';
+    btn.disabled = true;
+
+    setTimeout(() => {
+      if (email.toLowerCase() === VALID_EMAIL.toLowerCase() && password === VALID_PASSWORD) {
+        sessionStorage.setItem('fe_session', 'active');
+        sessionStorage.setItem('fe_user_email', email);
+        sessionStorage.setItem('fe_login_toast', '1');
+        window.location.href = 'dashboard.html';
+      } else {
+        btnText.textContent = 'Sign In';
+        spinner.style.display = 'none';
+        btn.disabled = false;
+        showError('Invalid email or password. Please try again.');
+      }
+    }, 700);
+  });
+</script>
+</body>
+</html>
