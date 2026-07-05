@@ -40,7 +40,7 @@
 const CONFIG = {
   MODE: 'appscript', // this project is wired for Apps Script (no-login) mode by default
   DRIVE_ROOT_FOLDER_ID: 'root', // unused in appscript mode, kept for the optional OAuth path (see README "Option B")
-  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbz7TvcC0eN5HRPRs6A9UMGfQuhi3FHLMy0WTm5EjjTsE1J4QWABfRnLolFzK-0TXu5-DQ/exec', // <-- paste your deployed Web App URL here
+  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycby5xoug0UurlYCgi3eD99a7wqxRss5DmkZLEqPOo4N_0V7g0h_r_Be4s6Vr-Xl5tqaJFA/exec', // <-- paste your deployed Web App URL here
 };
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
