@@ -18,7 +18,37 @@ const appState = {
   contextTargetId: null,
   draggedId: null,
   clipboard: null,            // { mode: 'copy' | 'cut', id, name } — set by Copy/Cut, consumed by Paste
+  busyDepth: 0,               // >0 while a mutating action is in flight — blocks duplicate clicks
 };
+
+/** Runs fn() while showing the global "busy" state (progress bar +
+ *  disabled/dimmed cards, rows, and buttons) so a second click during
+ *  an in-flight action can't fire a duplicate operation. If something
+ *  is already in flight, the new attempt is politely rejected instead
+ *  of queued or run in parallel. Wrap this at the OUTERMOST click/submit
+ *  handler for every mutating action — never inside a shared helper
+ *  that might also be called from another wrapped handler, or the
+ *  nested call would be rejected as "already busy".
+ */
+async function withBusyLock(fn) {
+  if (appState.busyDepth > 0) {
+    showToast('info', 'Please wait', 'Another action is still in progress.');
+    return;
+  }
+  appState.busyDepth++;
+  document.body.classList.add('action-busy');
+  const bar = document.getElementById('globalProgressBar');
+  if (bar) bar.style.display = 'block';
+  try {
+    return await fn();
+  } finally {
+    appState.busyDepth = Math.max(0, appState.busyDepth - 1);
+    if (appState.busyDepth === 0) {
+      document.body.classList.remove('action-busy');
+      if (bar) bar.style.display = 'none';
+    }
+  }
+}
 
 const EXT_ICON = {
   png: ['fa-file-image', 'icon-image'], jpg: ['fa-file-image', 'icon-image'], jpeg: ['fa-file-image', 'icon-image'],
@@ -143,7 +173,7 @@ function buildTreeNode(node, isRoot = false) {
   row.addEventListener('dragleave', () => { if (node.id !== appState.currentFolderId) row.classList.remove('active'); });
   row.addEventListener('drop', async (e) => {
     e.preventDefault(); row.classList.remove('active');
-    await handleDropMove(appState.draggedId, node.id);
+    await withBusyLock(() => handleDropMove(appState.draggedId, node.id));
   });
 
   row.addEventListener('contextmenu', (e) => {
@@ -374,7 +404,7 @@ function buildFileCard(item) {
     card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
     card.addEventListener('drop', async (e) => {
       e.preventDefault(); card.classList.remove('drag-over');
-      await handleDropMove(appState.draggedId, item.id);
+      await withBusyLock(() => handleDropMove(appState.draggedId, item.id));
     });
   }
 
@@ -413,7 +443,7 @@ function buildFileRow(item) {
   tr.addEventListener('dragstart', (e) => { appState.draggedId = item.id; e.dataTransfer.effectAllowed = 'move'; });
   if (item.type === 'folder') {
     tr.addEventListener('dragover', (e) => e.preventDefault());
-    tr.addEventListener('drop', async (e) => { e.preventDefault(); await handleDropMove(appState.draggedId, item.id); });
+    tr.addEventListener('drop', async (e) => { e.preventDefault(); await withBusyLock(() => handleDropMove(appState.draggedId, item.id)); });
   }
 
   return tr;
@@ -603,7 +633,10 @@ function openContextMenu(x, y, item) {
       : `<div class="context-menu-item ${a.danger ? 'danger' : ''}" data-action="${a.key}"><i class="fa-solid ${a.icon}"></i>${a.label}</div>`
   ).join('');
   menu.querySelectorAll('[data-action]').forEach(el => {
-    el.addEventListener('click', () => { closeContextMenu(); handleAction(el.dataset.action, item); });
+    el.addEventListener('click', () => {
+      closeContextMenu();
+      withBusyLock(() => handleAction(el.dataset.action, item));
+    });
   });
 
   menu.style.left = '-9999px';
@@ -625,7 +658,7 @@ function openEmptyAreaContextMenu(x, y) {
   menu.innerHTML = `<div class="context-menu-item" data-action="paste-empty"><i class="fa-solid fa-paste"></i>Paste "${escapeHtml(appState.clipboard.name)}"</div>`;
   menu.querySelector('[data-action="paste-empty"]').addEventListener('click', () => {
     closeContextMenu();
-    pasteClipboard(appState.currentFolderId);
+    withBusyLock(() => pasteClipboard(appState.currentFolderId));
   });
 
   menu.style.left = '-9999px';
@@ -653,53 +686,77 @@ document.addEventListener('DOMContentLoaded', () => {
     const name = document.getElementById('newFolderNameInput').value.trim();
     if (!name) return;
 
-    const btn = document.getElementById('createFolderSubmitBtn');
-    const btnText = document.getElementById('createFolderBtnText');
-    const spinner = document.getElementById('createFolderSpinner');
-    const input = document.getElementById('newFolderNameInput');
+    await withBusyLock(async () => {
+      const btn = document.getElementById('createFolderSubmitBtn');
+      const btnText = document.getElementById('createFolderBtnText');
+      const spinner = document.getElementById('createFolderSpinner');
+      const input = document.getElementById('newFolderNameInput');
 
-    btn.disabled = true;
-    input.disabled = true;
-    btnText.textContent = 'Creating...';
-    spinner.style.display = 'inline-block';
+      btn.disabled = true;
+      input.disabled = true;
+      btnText.textContent = 'Creating...';
+      spinner.style.display = 'inline-block';
 
-    const startedAt = Date.now();
-    let node;
-    try {
-      node = await DriveAPI.createFolder(modalTargetParentId, name);
-    } catch (err) {
-      showToast('error', "Couldn't create folder", String(err.message || err));
+      const startedAt = Date.now();
+      let node;
+      try {
+        node = await DriveAPI.createFolder(modalTargetParentId, name);
+      } catch (err) {
+        showToast('error', "Couldn't create folder", String(err.message || err));
+        btn.disabled = false;
+        input.disabled = false;
+        btnText.textContent = 'Create';
+        spinner.style.display = 'none';
+        return;
+      }
+
+      // Keep the "Creating..." state visible for a beat so the animation reads
+      // even on the instant mock backend — a real network call will just add to this.
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
+
+      bootstrap.Modal.getInstance(document.getElementById('createFolderModal')).hide();
+      showToast('success', 'Folder created', `"${name}" was created`);
+      renderSidebarTree(); renderContent();
+      highlightNewItem(node.id);
+
       btn.disabled = false;
       input.disabled = false;
       btnText.textContent = 'Create';
       spinner.style.display = 'none';
-      return;
-    }
-
-    // Keep the "Creating..." state visible for a beat so the animation reads
-    // even on the instant mock backend — a real network call will just add to this.
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
-
-    bootstrap.Modal.getInstance(document.getElementById('createFolderModal')).hide();
-    showToast('success', 'Folder created', `"${name}" was created`);
-    renderSidebarTree(); renderContent();
-    highlightNewItem(node.id);
-
-    btn.disabled = false;
-    input.disabled = false;
-    btnText.textContent = 'Create';
-    spinner.style.display = 'none';
+    });
   });
 
   document.getElementById('renameForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('renameInput').value.trim();
     if (!name || !renameTargetId) return;
-    await DriveAPI.renameNode(renameTargetId, name);
-    bootstrap.Modal.getInstance(document.getElementById('renameModal')).hide();
-    showToast('success', 'Renamed', `Renamed to "${name}"`);
-    renderSidebarTree(); renderContent(); renderBreadcrumb();
+
+    await withBusyLock(async () => {
+      const btn = document.getElementById('renameSubmitBtn');
+      const btnText = document.getElementById('renameBtnText');
+      const spinner = document.getElementById('renameSpinner');
+      const input = document.getElementById('renameInput');
+
+      btn.disabled = true;
+      input.disabled = true;
+      btnText.textContent = 'Saving...';
+      spinner.style.display = 'inline-block';
+
+      try {
+        await DriveAPI.renameNode(renameTargetId, name);
+        bootstrap.Modal.getInstance(document.getElementById('renameModal')).hide();
+        showToast('success', 'Renamed', `Renamed to "${name}"`);
+        renderSidebarTree(); renderContent(); renderBreadcrumb();
+      } catch (err) {
+        showToast('error', "Couldn't rename", String(err.message || err));
+      } finally {
+        btn.disabled = false;
+        input.disabled = false;
+        btnText.textContent = 'Save';
+        spinner.style.display = 'none';
+      }
+    });
   });
 });
 
@@ -879,7 +936,7 @@ function wireGlobalEvents() {
 
   document.getElementById('uploadFileBtn').addEventListener('click', () => triggerUpload(appState.currentFolderId));
   document.getElementById('newFolderBtn').addEventListener('click', () => openCreateFolderModal(appState.currentFolderId));
-  document.getElementById('pasteBtn').addEventListener('click', () => pasteClipboard(appState.currentFolderId));
+  document.getElementById('pasteBtn').addEventListener('click', () => withBusyLock(() => pasteClipboard(appState.currentFolderId)));
 
   // Right-click on empty grid/list space (not on an item) offers Paste
   document.getElementById('gridView').addEventListener('contextmenu', (e) => {
@@ -1084,7 +1141,7 @@ function renderSettingsView() {
     document.getElementById('logoutBtn').click();
   });
 
-  el.querySelector('#settingsEmptyTrashBtn').addEventListener('click', () => emptyTrash());
+  el.querySelector('#settingsEmptyTrashBtn').addEventListener('click', () => withBusyLock(() => emptyTrash()));
 
   DriveAPI.getStorageInfo().then(info => {
     const body = document.getElementById('settingsStorageBody');

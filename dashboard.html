@@ -11,6 +11,9 @@
 </head>
 <body>
 
+<div id="globalProgressBar"></div>
+
+
 <div class="dropzone-overlay" id="dropzoneOverlay">
   <div class="dropzone-inner">
     <i class="fa-solid fa-cloud-arrow-up"></i>
@@ -182,7 +185,10 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="renameSubmitBtn">
+            <span id="renameBtnText">Save</span>
+            <span id="renameSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none;"></span>
+          </button>
         </div>
       </form>
     </div>
