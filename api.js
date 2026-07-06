@@ -40,7 +40,7 @@
 const CONFIG = {
   MODE: 'appscript', // this project is wired for Apps Script (no-login) mode by default
   DRIVE_ROOT_FOLDER_ID: 'root', // unused in appscript mode, kept for the optional OAuth path (see README "Option B")
-  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycby5xoug0UurlYCgi3eD99a7wqxRss5DmkZLEqPOo4N_0V7g0h_r_Be4s6Vr-Xl5tqaJFA/exec', // <-- paste your deployed Web App URL here
+  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzhHgGC_60wDovw7-eNpY15IljQ90n_HJuGCCiqyixGOfy3mOQ4fa3G4ytAxFyuy6b3HQ/exec', // <-- paste your deployed Web App URL here
 };
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -64,10 +64,12 @@ const DriveAPI = {
   restoreNode: (id) => DriveAPI._call('restoreNode', { id }),
   permanentlyDelete: (id) => DriveAPI._call('permanentlyDelete', { id }),
   moveNode: (id, newParentId) => DriveAPI._call('moveNode', { id, newParentId }),
+  copyNode: (id, targetParentId) => DriveAPI._call('copyNode', { id, targetParentId }),
   uploadFile: (parentId, fileMeta) => DriveAPI._call('uploadFile', { parentId, fileMeta }),
   toggleFavorite: (id) => DriveAPI._call('toggleFavorite', { id }),
   ping: () => DriveAPI._call('ping'),
   getStorageInfo: () => DriveAPI._call('getStorageInfo'),
+  logout: () => DriveAPI._call('logout'),
 
   /** Lazily resolves a usable blob: URL for a file's content (preview/download).
    *  Mock files already carry a blob URL from upload. Live/appscript files
@@ -100,23 +102,67 @@ function base64ToBlob(base64, mimeType) {
 }
 
 /* ============================================================
-   APPS SCRIPT BACKEND — no browser-side login required. Every
-   call is a plain POST to your deployed Web App URL; the script
-   itself already has standing access to your Drive because it
-   runs as "Execute as: Me". Mutates the shared ROOT/STATE tree
-   just like the other backends so app.js needs no branching.
+   APPS SCRIPT BACKEND — every call is a plain POST to your
+   deployed Web App URL. The script runs as "Execute as: Me", so
+   it has standing access to your Drive/Sheet/Gmail regardless of
+   caller — which is exactly why every action except login/reset/
+   ping requires a valid session token (see SESSION_TOKEN_KEY
+   below). The token is issued by Code.gs on successful login and
+   attached to every subsequent request automatically here, so
+   app.js and login.html don't need to think about it.
    ============================================================ */
+const SESSION_TOKEN_KEY = 'fe_session_token';
+
+// Error messages Code.gs throws for a missing/expired/invalid token —
+// used to detect an auth failure and bounce back to the login page
+// instead of showing a confusing raw error in the middle of the app.
+const AUTH_FAILURE_MESSAGES = ['Not authenticated. Please sign in again.', 'Session expired. Please sign in again.'];
+
+function handleAuthFailure() {
+  try {
+    sessionStorage.removeItem('fe_session');
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch (e) { /* sessionStorage unavailable — nothing to clean up */ }
+  if (typeof window !== 'undefined' && !/login\.html/.test(window.location.pathname)) {
+    window.location.href = 'login.html';
+  }
+}
+
 const AppScriptBackend = {
   async _post(action, payload) {
+    let token = null;
+    try { token = sessionStorage.getItem(SESSION_TOKEN_KEY); } catch (e) { /* no sessionStorage */ }
+    const body = token ? Object.assign({}, payload, { token }) : payload;
+
     const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids an Apps Script CORS preflight
-      body: JSON.stringify({ action, payload }),
+      body: JSON.stringify({ action, payload: body }),
     });
     if (!res.ok) throw new Error(`Network error contacting Apps Script (${res.status})`);
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) {
+      if (AUTH_FAILURE_MESSAGES.includes(data.error)) handleAuthFailure();
+      throw new Error(data.error);
+    }
+    // A successful login response carries a fresh session token — persist it
+    // here so every caller (login.html, DriveAPI, etc.) benefits automatically.
+    if (action === 'login' && data.result && data.result.token) {
+      try { sessionStorage.setItem(SESSION_TOKEN_KEY, data.result.token); } catch (e) { /* no sessionStorage */ }
+    }
     return data.result;
+  },
+
+  async logout() {
+    try {
+      await AppScriptBackend._post('logout', {});
+    } finally {
+      try {
+        sessionStorage.removeItem('fe_session');
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      } catch (e) { /* no sessionStorage */ }
+    }
+    return true;
   },
 
   async getTree() {
@@ -134,7 +180,7 @@ const AppScriptBackend = {
 
   async createFolder({ parentId, name }) {
     const data = await AppScriptBackend._post('createFolder', { parentId, name });
-    const node = { id: data.id, type: 'folder', name: data.name, createdAt: new Date().toISOString(), seq: nextSeq(), children: [] };
+    const node = { id: data.id, type: 'folder', name: data.name, createdAt: new Date().toISOString(), children: [] };
     const parent = findNode(parentId);
     if (parent) parent.children.push(node);
     return node;
@@ -187,6 +233,14 @@ const AppScriptBackend = {
     return true;
   },
 
+  async copyNode({ id, targetParentId }) {
+    const node = await AppScriptBackend._post('copyNode', { id, targetParentId });
+    const target = findNode(targetParentId);
+    if (target) target.children.push(node);
+    STATE.recentIds.unshift(node.id);
+    return node;
+  },
+
   async uploadFile({ parentId, fileMeta }) {
     const base64Data = await fileToBase64(fileMeta.rawFile);
     const data = await AppScriptBackend._post('uploadFile', {
@@ -198,7 +252,6 @@ const AppScriptBackend = {
       id: data.id, type: 'file', name: data.name,
       ext: fileMeta.ext, size: Number(data.size) || fileMeta.size,
       createdAt: new Date().toISOString(),
-      seq: nextSeq(),
       url: fileMeta.url, // local blob preview already available immediately
     };
     if (parent) parent.children.push(node);
@@ -231,6 +284,7 @@ const AppScriptBackend = {
 
    ============================================================ */
 const MockBackend = {
+  logout: () => { try { sessionStorage.removeItem('fe_session'); sessionStorage.removeItem(SESSION_TOKEN_KEY); } catch (e) {} return Promise.resolve(true); },
   getTree: () => Promise.resolve(ROOT),
 
   createFolder: ({ parentId, name }) => {
@@ -280,6 +334,16 @@ const MockBackend = {
     parent.children.splice(index, 1);
     target.children.push(node);
     return Promise.resolve(true);
+  },
+
+  copyNode: ({ id, targetParentId }) => {
+    const source = findNode(id);
+    const target = findNode(targetParentId);
+    if (!source || !target || target.type !== 'folder') return Promise.reject('Invalid copy');
+    const clone = deepCloneWithNewIds(source);
+    target.children.push(clone);
+    STATE.recentIds.unshift(clone.id);
+    return Promise.resolve(clone);
   },
 
   uploadFile: ({ parentId, fileMeta }) => {
@@ -364,6 +428,49 @@ async function fetchDriveNode(id, knownMeta) {
   return { id, type: 'folder', name, createdAt, children };
 }
 
+/** Recursively duplicates a Drive file or folder into targetParentId via
+ *  the Drive API v3. files.copy only duplicates a folder's own metadata
+ *  (not its contents), so folders are handled by creating a new folder
+ *  and copying each child into it one by one. */
+async function copyDriveNode(id, targetParentId) {
+  const metaRes = await authFetch(`${DRIVE_API}/files/${id}?fields=id,name,mimeType`);
+  const meta = await metaRes.json();
+
+  if (meta.mimeType === FOLDER_MIME) {
+    const createdRes = await authFetch(`${DRIVE_API}/files?fields=id,name,createdTime`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: meta.name, mimeType: FOLDER_MIME, parents: [targetParentId] }),
+    });
+    const created = await createdRes.json();
+    const node = { id: created.id, type: 'folder', name: created.name, createdAt: created.createdTime, children: [] };
+
+    const q = encodeURIComponent(`'${id}' in parents and trashed = false`);
+    const listRes = await authFetch(`${DRIVE_API}/files?q=${q}&fields=files(id)&pageSize=1000`);
+    const listData = await listRes.json();
+    for (const child of listData.files || []) {
+      node.children.push(await copyDriveNode(child.id, created.id));
+    }
+    return node;
+  }
+
+  const copyRes = await authFetch(`${DRIVE_API}/files/${id}/copy?fields=id,name,createdTime,size`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parents: [targetParentId] }),
+  });
+  const copy = await copyRes.json();
+  return {
+    id: copy.id,
+    type: 'file',
+    name: copy.name,
+    ext: (copy.name.split('.').pop() || '').toLowerCase(),
+    size: Number(copy.size) || 0,
+    createdAt: copy.createdTime,
+    url: null,
+  };
+}
+
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -374,6 +481,7 @@ async function fileToBase64(file) {
 }
 
 const LiveBackend = {
+  logout: () => { try { sessionStorage.removeItem('fe_session'); sessionStorage.removeItem(SESSION_TOKEN_KEY); } catch (e) {} return Promise.resolve(true); },
   async getTree() {
     const node = await fetchDriveNode(CONFIG.DRIVE_ROOT_FOLDER_ID);
     ROOT.id = node.id;
@@ -390,7 +498,7 @@ const LiveBackend = {
       body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
     });
     const data = await res.json();
-    const node = { id: data.id, type: 'folder', name: data.name, createdAt: data.createdTime, seq: nextSeq(), children: [] };
+    const node = { id: data.id, type: 'folder', name: data.name, createdAt: data.createdTime, children: [] };
     const parent = findNode(parentId);
     if (parent) parent.children.push(node);
     return node;
@@ -460,6 +568,13 @@ const LiveBackend = {
     return true;
   },
 
+  async copyNode({ id, targetParentId }) {
+    const node = await copyDriveNode(id, targetParentId);
+    const target = findNode(targetParentId);
+    if (target) target.children.push(node);
+    return node;
+  },
+
   async uploadFile({ parentId, fileMeta }) {
     // fileMeta.rawFile is the actual browser File object (see app.js handleFiles).
     const rawFile = fileMeta.rawFile;
@@ -487,7 +602,6 @@ const LiveBackend = {
       id: data.id, type: 'file', name: data.name,
       ext: fileMeta.ext, size: Number(data.size) || rawFile.size,
       createdAt: data.createdTime || new Date().toISOString(),
-      seq: nextSeq(),
       url: fileMeta.url, // local blob preview already available immediately
     };
     if (parent) parent.children.push(node);
@@ -546,4 +660,25 @@ function collectAll(node = ROOT, out = []) {
   out.push(node);
   if (node.children) node.children.forEach(c => collectAll(c, out));
   return out;
+}
+
+/** Deep-clones a node (and, for folders, its whole subtree) with brand
+ *  new ids and createdAt timestamps — used by MockBackend.copyNode so a
+ *  "Copy" behaves like a real duplicate, not a second reference to the
+ *  same node. */
+function deepCloneWithNewIds(node) {
+  const clone = {
+    id: nextId(),
+    type: node.type,
+    name: node.name,
+    createdAt: new Date().toISOString(),
+  };
+  if (node.type === 'folder') {
+    clone.children = (node.children || []).map(deepCloneWithNewIds);
+  } else {
+    clone.ext = node.ext;
+    clone.size = node.size;
+    clone.url = node.url; // mock files just reuse the same local blob URL/preview
+  }
+  return clone;
 }

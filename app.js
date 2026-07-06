@@ -17,6 +17,7 @@ const appState = {
   searchQuery: '',
   contextTargetId: null,
   draggedId: null,
+  clipboard: null,            // { mode: 'copy' | 'cut', id, name } — set by Copy/Cut, consumed by Paste
 };
 
 const EXT_ICON = {
@@ -285,6 +286,13 @@ function renderContent() {
   document.getElementById('uploadFileBtn').style.display = isTrash ? 'none' : '';
   document.getElementById('newFolderBtn').style.display = isTrash ? 'none' : '';
 
+  const pasteBtn = document.getElementById('pasteBtn');
+  const canPasteInCurrentView = appState.clipboard && appState.currentView === 'files';
+  pasteBtn.style.display = canPasteInCurrentView ? '' : 'none';
+  if (canPasteInCurrentView) {
+    pasteBtn.innerHTML = `<i class="fa-solid fa-paste"></i> Paste "${escapeHtml(appState.clipboard.name)}"`;
+  }
+
   const items = sortItems(getViewItems());
   const gridEl = document.getElementById('gridView');
   const listBody = document.getElementById('listViewBody');
@@ -329,6 +337,9 @@ function buildFileCard(item) {
   card.className = 'file-card';
   card.draggable = appState.currentView === 'files';
   card.dataset.id = item.id;
+  if (appState.clipboard && appState.clipboard.mode === 'cut' && appState.clipboard.id === item.id) {
+    card.classList.add('clipboard-cut');
+  }
 
   const isFav = STATE.favorites.has(item.id);
   card.innerHTML = `
@@ -375,6 +386,9 @@ function buildFileRow(item) {
   const tr = document.createElement('tr');
   tr.dataset.id = item.id;
   tr.draggable = appState.currentView === 'files';
+  if (appState.clipboard && appState.clipboard.mode === 'cut' && appState.clipboard.id === item.id) {
+    tr.classList.add('clipboard-cut');
+  }
   const isFav = STATE.favorites.has(item.id);
 
   tr.innerHTML = `
@@ -425,12 +439,20 @@ function actionsFor(item) {
       { key: 'delete-forever', icon: 'fa-trash', label: 'Delete forever', danger: true },
     ];
   }
+  const canPasteHere = item.type === 'folder'
+    && appState.clipboard
+    && appState.clipboard.id !== item.id
+    && !isDescendantOf(appState.clipboard.id, item.id);
+
   if (item.type === 'folder') {
     return [
       { key: 'open', icon: 'fa-folder-open', label: 'Open' },
       { key: 'new-folder', icon: 'fa-folder-plus', label: 'New folder inside' },
       { key: 'upload', icon: 'fa-upload', label: 'Upload file here' },
+      ...(canPasteHere ? [{ key: 'paste-into', icon: 'fa-paste', label: `Paste "${appState.clipboard.name}" here` }] : []),
       'divider',
+      { key: 'copy', icon: 'fa-copy', label: 'Copy' },
+      { key: 'cut', icon: 'fa-scissors', label: 'Cut' },
       { key: 'rename', icon: 'fa-pen', label: 'Rename' },
       { key: 'favorite', icon: 'fa-star', label: STATE.favorites.has(item.id) ? 'Unfavorite' : 'Add to favorites' },
       { key: 'properties', icon: 'fa-circle-info', label: 'Properties' },
@@ -442,6 +464,8 @@ function actionsFor(item) {
     { key: 'view', icon: 'fa-eye', label: 'View' },
     { key: 'download', icon: 'fa-download', label: 'Download' },
     'divider',
+    { key: 'copy', icon: 'fa-copy', label: 'Copy' },
+    { key: 'cut', icon: 'fa-scissors', label: 'Cut' },
     { key: 'rename', icon: 'fa-pen', label: 'Rename' },
     { key: 'share', icon: 'fa-share-nodes', label: 'Share' },
     { key: 'favorite', icon: 'fa-star', label: STATE.favorites.has(item.id) ? 'Unfavorite' : 'Add to favorites' },
@@ -449,6 +473,20 @@ function actionsFor(item) {
     'divider',
     { key: 'delete', icon: 'fa-trash', label: 'Delete', danger: true },
   ];
+}
+
+/** True if nodeId is anywhere inside ancestorId's subtree (or is ancestorId
+ *  itself) — used to block cutting a folder into its own descendant. */
+function isDescendantOf(ancestorId, nodeId) {
+  const ancestor = findNode(ancestorId);
+  if (!ancestor || ancestor.type !== 'folder') return false;
+  let found = false;
+  (function walk(n) {
+    if (found) return;
+    if (n.id === nodeId) { found = true; return; }
+    (n.children || []).forEach(walk);
+  })(ancestor);
+  return found;
 }
 
 async function handleAction(action, item) {
@@ -485,6 +523,57 @@ async function handleAction(action, item) {
       renderContent();
       break;
     }
+    case 'copy': {
+      appState.clipboard = { mode: 'copy', id: item.id, name: item.name };
+      showToast('info', 'Copied', `"${item.name}" copied — choose Paste to place it.`);
+      renderContent();
+      break;
+    }
+    case 'cut': {
+      appState.clipboard = { mode: 'cut', id: item.id, name: item.name };
+      showToast('info', 'Cut', `"${item.name}" cut — choose Paste to move it.`);
+      renderContent();
+      break;
+    }
+    case 'paste-into': {
+      await pasteClipboard(item.id);
+      break;
+    }
+  }
+}
+
+/** Pastes whatever is in appState.clipboard into targetFolderId — a
+ *  copy (via DriveAPI.copyNode) or a move (via the existing
+ *  DriveAPI.moveNode) depending on how it got there. */
+async function pasteClipboard(targetFolderId) {
+  const clip = appState.clipboard;
+  if (!clip) return;
+
+  if (clip.id === targetFolderId) {
+    showToast('error', "Can't paste here", 'Choose a different destination folder.');
+    return;
+  }
+  if (isDescendantOf(clip.id, targetFolderId)) {
+    showToast('error', "Can't paste here", "A folder can't be moved or copied into its own subfolder.");
+    return;
+  }
+
+  try {
+    if (clip.mode === 'cut') {
+      await DriveAPI.moveNode(clip.id, targetFolderId);
+      showToast('success', 'Moved', `"${clip.name}" moved successfully`);
+      appState.clipboard = null;
+      renderSidebarTree(); renderContent();
+      highlightNewItem(clip.id);
+    } else {
+      const node = await DriveAPI.copyNode(clip.id, targetFolderId);
+      showToast('success', 'Copied', `"${clip.name}" copied successfully`);
+      appState.clipboard = null;
+      renderSidebarTree(); renderContent();
+      if (node) highlightNewItem(node.id);
+    }
+  } catch (err) {
+    showToast('error', clip.mode === 'cut' ? 'Move failed' : 'Copy failed', String(err.message || err));
   }
 }
 
@@ -526,6 +615,25 @@ function openContextMenu(x, y, item) {
 }
 function closeContextMenu() {
   document.getElementById('contextMenu').classList.remove('show');
+}
+
+/** Right-clicking empty grid/list space (not an item) offers just Paste,
+ *  when there's something in the clipboard to paste. */
+function openEmptyAreaContextMenu(x, y) {
+  if (!appState.clipboard) return;
+  const menu = document.getElementById('contextMenu');
+  menu.innerHTML = `<div class="context-menu-item" data-action="paste-empty"><i class="fa-solid fa-paste"></i>Paste "${escapeHtml(appState.clipboard.name)}"</div>`;
+  menu.querySelector('[data-action="paste-empty"]').addEventListener('click', () => {
+    closeContextMenu();
+    pasteClipboard(appState.currentFolderId);
+  });
+
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
+  menu.classList.add('show');
+  const menuHeight = menu.offsetHeight;
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - 210)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menuHeight - 20)) + 'px';
 }
 
 // ============================================================
@@ -771,6 +879,19 @@ function wireGlobalEvents() {
 
   document.getElementById('uploadFileBtn').addEventListener('click', () => triggerUpload(appState.currentFolderId));
   document.getElementById('newFolderBtn').addEventListener('click', () => openCreateFolderModal(appState.currentFolderId));
+  document.getElementById('pasteBtn').addEventListener('click', () => pasteClipboard(appState.currentFolderId));
+
+  // Right-click on empty grid/list space (not on an item) offers Paste
+  document.getElementById('gridView').addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.file-card') || !appState.clipboard || appState.currentView !== 'files') return;
+    e.preventDefault();
+    openEmptyAreaContextMenu(e.clientX, e.clientY);
+  });
+  document.getElementById('listViewWrap').addEventListener('contextmenu', (e) => {
+    if (e.target.closest('tr') || !appState.clipboard || appState.currentView !== 'files') return;
+    e.preventDefault();
+    openEmptyAreaContextMenu(e.clientX, e.clientY);
+  });
 
   // Sidebar nav items
   document.getElementById('nav-files').addEventListener('click', () => openFolder(ROOT.id));
@@ -816,7 +937,8 @@ function wireGlobalEvents() {
   });
   document.getElementById('sidebarBackdrop').addEventListener('click', closeMobileSidebar);
 
-  document.getElementById('logoutBtn').addEventListener('click', () => {
+  document.getElementById('logoutBtn').addEventListener('click', async () => {
+    try { await DriveAPI.logout(); } catch (e) { /* best-effort — clear local state regardless */ }
     sessionStorage.removeItem('fe_session');
     sessionStorage.removeItem('fe_user_email');
     window.location.href = 'login.html';
