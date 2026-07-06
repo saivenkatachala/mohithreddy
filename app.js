@@ -479,7 +479,7 @@ function actionsFor(item) {
       { key: 'open', icon: 'fa-folder-open', label: 'Open' },
       { key: 'new-folder', icon: 'fa-folder-plus', label: 'New folder inside' },
       { key: 'upload', icon: 'fa-upload', label: 'Upload file here' },
-      ...(canPasteHere ? [{ key: 'paste-into', icon: 'fa-paste', label: `Paste "${appState.clipboard.name}" here` }] : []),
+      ...(canPasteHere ? [{ key: 'paste-into', icon: 'fa-paste', label: `Paste "${escapeHtml(appState.clipboard.name)}" here` }] : []),
       'divider',
       { key: 'copy', icon: 'fa-copy', label: 'Copy' },
       { key: 'cut', icon: 'fa-scissors', label: 'Cut' },
@@ -780,7 +780,7 @@ function openPropertiesModal(item) {
       <tr><th>Type</th><td>${item.type === 'folder' ? 'Folder' : (item.ext || 'File').toUpperCase()}</td></tr>
       ${item.type === 'file' ? `<tr><th>Size</th><td>${formatSize(item.size)}</td></tr>` : `<tr><th>Contents</th><td>${(item.children || []).length} items</td></tr>`}
       <tr><th>Created</th><td>${formatDate(item.createdAt)}</td></tr>
-      <tr><th>Location</th><td>${(getPathNodes(item.id) || []).map(n => n.name).join(' / ')}</td></tr>
+      <tr><th>Location</th><td>${(getPathNodes(item.id) || []).map(n => escapeHtml(n.name)).join(' / ')}</td></tr>
     </table>
   `;
   bootstrap.Modal.getOrCreateInstance(document.getElementById('propertiesModal')).show();
